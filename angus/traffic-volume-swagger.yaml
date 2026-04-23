@@ -1,0 +1,116 @@
+basePath: /v1
+consumes:
+- '*/*'
+definitions:
+    ErrorDetails:
+        description: Error response
+        example:
+            ErrorDetails:
+                ErrorDateTime: XXXXXXXXXX
+                Message: XXXXXXXXXX
+                RequestedMethod: XXXXXXXXXX
+                RequestedUrl: XXXXXXXXXX
+                TransactionId: XXXXXXXXXX
+        properties:
+            ErrorDateTime:
+                type: string
+            Message:
+                type: string
+            RequestedMethod:
+                type: string
+            RequestedUrl:
+                type: string
+            TransactionId:
+                type: string
+        required:
+        - TransactionId
+        - ErrorDateTime
+        - Message
+        - RequestedUrl
+        - RequestedMethod
+        type: object
+host: api.transport.nsw.gov.au
+info:
+    title: Traffic Volume Counts API
+    version: '1.0'
+paths:
+    /traffic_volume:
+        get:
+            description: "Standard SQL is accepted including aggregate functions such\
+                \ as count, max, min. \n Order by and limit is also supported  <br>\
+                \ <br>\n \n <b>Some example queries are: </b> <br> \n SELECT * FROM\
+                \ road_traffic_counts_station_reference ORDER BY station_id LIMIT\
+                \ 50  \n SELECT * FROM road_traffic_counts_hourly_permanent LIMIT\
+                \ 10  \n <br>\n <b>Current tables offered to users are: </b> <br>\
+                \ \n   road_traffic_counts_station_reference <br> \n   road_traffic_counts_yearly_summary\
+                \  <br>\n   road_traffic_counts_hourly_permanent <br>\n   road_traffic_counts_hourly_sample\
+                \ <br> <br>\n   \n This API is based on PostgreSQL. \n You can view\
+                \ the <a href=\"http://www.postgresql.org/docs/9.1/static/\">official\
+                \ documentation</a> for further details on query syntax.\n"
+            parameters:
+            -   default: geojson
+                description: Select format of the return data
+                enum:
+                - csv
+                - kml
+                - geojson
+                - shp
+                - json
+                in: query
+                name: format
+                required: false
+                type: string
+            -   default: 'select * from road_traffic_counts_station_reference limit
+                    50 '
+                description: Sql query you wish to execute
+                in: query
+                name: q
+                required: false
+                type: string
+            produces:
+            - application/json
+            - csv
+            - kml
+            - shp
+            responses:
+                '200':
+                    description: The request has been processed successfully.
+                    examples: {}
+                    schema:
+                        type: file
+                '401':
+                    description: The application calling the API has not been authenticated.
+                    examples: {}
+                    schema:
+                        $ref: '#/definitions/ErrorDetails'
+                '404':
+                    description: The requested resource could not be found.
+                    examples: {}
+                    schema:
+                        $ref: '#/definitions/ErrorDetails'
+                '500':
+                    description: An internal error has occured.
+                    examples: {}
+                    schema:
+                        $ref: '#/definitions/ErrorDetails'
+                '503':
+                    description: The server is currently unavailable.
+                    examples: {}
+                    schema:
+                        $ref: '#/definitions/ErrorDetails'
+            summary: Execute various queries on the Traffic Volume Counts API
+            tags:
+            - /traffic_volume
+produces:
+- application/zip
+schemes:
+- https
+security:
+-   APIKey: []
+securityDefinitions:
+    APIKey:
+        description: 'Expected Format: apikey [TOKEN]'
+        in: header
+        name: Authorization
+        type: apiKey
+swagger: '2.0'
