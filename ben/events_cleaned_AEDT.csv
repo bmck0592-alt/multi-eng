@@ -1,0 +1,27 @@
+summary,start,end,location,hour,day_of_week,month,year,is_weekend,duration_hours,venue,intensity
+2026 AFL Round 12: Sydney Swans v Richmond FC,2026-05-30 13:15:00,2026-05-30 16:15:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",13,5,5,2026,1,3.0,scg,1
+2026 AFL Round 17: Sydney Swans v Western Bulldogs*,2026-07-02 00:00:00,2026-07-02 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,3,7,2026,0,2.0,scg,1
+2026 AFL Round 17: Sydney Swans v Western Bulldogs*,2026-07-03 00:00:00,2026-07-03 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,4,7,2026,0,2.0,scg,1
+2026 AFL Round 17: Sydney Swans v Western Bulldogs*,2026-07-04 00:00:00,2026-07-04 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,5,7,2026,1,2.0,scg,1
+2026 AFL Round 17: Sydney Swans v Western Bulldogs*,2026-07-05 00:00:00,2026-07-05 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,6,7,2026,1,2.0,scg,1
+2026 AFL Round 19: Sydney Swans v Adelaide Crows*,2026-07-16 00:00:00,2026-07-16 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,3,7,2026,0,2.0,scg,1
+2026 AFL Round 19: Sydney Swans v Adelaide Crows*,2026-07-17 00:00:00,2026-07-17 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,4,7,2026,0,2.0,scg,1
+2026 AFL Round 19: Sydney Swans v Adelaide Crows*,2026-07-18 00:00:00,2026-07-18 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,5,7,2026,1,2.0,scg,1
+2026 AFL Round 19: Sydney Swans v Adelaide Crows*,2026-07-19 00:00:00,2026-07-19 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,6,7,2026,1,2.0,scg,1
+2026 AFL Round 22: Sydney Swans v Port Adelaide FC*,2026-08-06 00:00:00,2026-08-06 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,3,8,2026,0,2.0,scg,1
+2026 AFL Round 22: Sydney Swans v Port Adelaide FC*,2026-08-07 00:00:00,2026-08-07 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,4,8,2026,0,2.0,scg,1
+2026 AFL Round 22: Sydney Swans v Port Adelaide FC*,2026-08-08 00:00:00,2026-08-08 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,5,8,2026,1,2.0,scg,1
+2026 AFL Round 22: Sydney Swans v Port Adelaide FC*,2026-08-09 00:00:00,2026-08-09 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,6,8,2026,1,2.0,scg,1
+2026 AFL Round 24: Sydney Swans v North Melbourne FC*,2026-08-20 00:00:00,2026-08-20 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,3,8,2026,0,2.0,scg,1
+2026 AFL Round 24: Sydney Swans v North Melbourne FC*,2026-08-21 00:00:00,2026-08-21 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,4,8,2026,0,2.0,scg,1
+2026 AFL Round 24: Sydney Swans v North Melbourne FC*,2026-08-22 00:00:00,2026-08-22 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,5,8,2026,1,2.0,scg,1
+2026 AFL Round 24: Sydney Swans v North Melbourne FC*,2026-08-23 00:00:00,2026-08-23 02:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",0,6,8,2026,1,2.0,scg,1
+Mens T20I Series: Australia v England,2026-11-29 19:15:00,2026-11-29 22:30:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",19,6,11,2026,1,3.25,scg,1
+2027-27 New Year's Test: Australia v New Zealand,2027-01-04 10:30:00,2027-01-04 12:30:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",10,0,1,2027,0,2.0,scg,1
+2027-27 New Year's Test: Australia v New Zealand,2027-01-05 10:30:00,2027-01-05 12:30:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",10,1,1,2027,0,2.0,scg,1
+2027-27 New Year's Test: Australia v New Zealand,2027-01-07 10:30:00,2027-01-07 12:30:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",10,3,1,2027,0,2.0,scg,1
+2027-27 New Year's Test: Australia v New Zealand,2027-01-06 10:30:00,2027-01-06 12:30:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",10,2,1,2027,0,2.0,scg,1
+2027-27 New Year's Test: Australia v New Zealand,2027-01-08 10:30:00,2027-01-08 12:30:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",10,4,1,2027,0,2.0,scg,1
+Welcome to the SCG!,2026-04-23 15:13:00,2026-04-23 15:28:00,Proudly powered by ECAL,15,3,4,2026,0,0.25,other,1
+2026 AFL Round 13: Sydney Swans v St Kilda FC,2026-06-07 15:15:00,2026-06-07 18:00:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",15,6,6,2026,1,2.75,scg,1
+2026 AFL Round 10: Sydney Swans v Collingwood FC,2026-05-15 19:30:00,2026-05-15 22:30:00,"Sydney Cricket Ground, Driver Ave, Moore Park NSW 2021",19,4,5,2026,0,3.0,scg,1

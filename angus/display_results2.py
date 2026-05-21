@@ -240,13 +240,8 @@ print(f"R²  : {r2:.3f}")
 
 
 # ============================================================
-# Display logic
+# Future prediction + display logic
 # ============================================================
-
-test["difference"] = test["predicted_traffic"] - test["historic_average"]
-test["percent_change"] = (test["difference"] / test["historic_average"]) * 100
-test["assistance_needed"] = test["predicted_traffic"] > test["historic_average"] * 1.25
-
 
 def congestion_level(value):
     if value < 10000:
@@ -258,21 +253,160 @@ def congestion_level(value):
     return "Severe"
 
 
-test["congestion"] = test["predicted_traffic"].apply(congestion_level)
+def make_prediction_row(date_str, event_name="No event", has_event=0,
+                        max_attendance=0, total_attendance=0,
+                        public_holiday=0, school_holiday=0):
+    date = pd.Timestamp(date_str).normalize()
 
-display_df = test.sort_values("date").tail(5).copy()
-display_df["date_display"] = display_df["date"].dt.strftime("%Y-%m-%d")
+    return {
+        "date": date,
+        "date_display": date.strftime("%Y-%m-%d"),
+        "event_name": event_name,
+
+        "month": date.month,
+        "day_of_week": date.dayofweek + 1,
+        "day_of_year": date.dayofyear,
+        "is_weekend": 1 if date.dayofweek >= 5 else 0,
+        "public_holiday": public_holiday,
+        "school_holiday": school_holiday,
+        "has_event": has_event,
+        "max_attendance": max_attendance,
+        "total_attendance": total_attendance,
+    }
+
+
+# ============================================================
+# Load Ben's future event file
+# ============================================================
+
+FUTURE_EVENTS_FILE = BEN_DIR / "events_cleaned.csv"
+
+future_rows = []
+
+if FUTURE_EVENTS_FILE.exists():
+    future_events = pd.read_csv(FUTURE_EVENTS_FILE)
+
+    future_events["date"] = (
+        pd.to_datetime(future_events["start"], errors="coerce")
+        .dt.tz_localize(None)
+        .dt.normalize()
+    )
+
+    # Choose the future dates you want to display
+    dates_to_predict = [
+        "2026-05-22",
+        "2026-05-23",
+        "2026-06-02",
+        "2027-10-13",
+        "2027-09-14",
+    ]
+
+    for date_str in dates_to_predict:
+        date = pd.Timestamp(date_str).normalize()
+        events_that_day = future_events[future_events["date"] == date]
+
+        if len(events_that_day) > 0:
+            has_event = 1
+
+            # Your main.py uses intensity * 50000
+            max_attendance = events_that_day["intensity"].max() * 50000
+            total_attendance = max_attendance * len(events_that_day)
+
+            event_name = "; ".join(events_that_day["summary"].astype(str).tolist())
+        else:
+            has_event = 0
+            max_attendance = 0
+            total_attendance = 0
+            event_name = "No event"
+
+        future_rows.append(
+            make_prediction_row(
+                date_str=date_str,
+                event_name=event_name,
+                has_event=has_event,
+                max_attendance=max_attendance,
+                total_attendance=total_attendance,
+                public_holiday=0,
+                school_holiday=0,
+            )
+        )
+
+else:
+    print(f"\nWarning: could not find {FUTURE_EVENTS_FILE}")
+    print("Using manual future scenarios instead.")
+
+    future_rows = [
+        make_prediction_row(
+            "2027-09-13",
+            event_name="Manual event scenario",
+            has_event=1,
+            max_attendance=45000,
+            total_attendance=45000,
+        ),
+        make_prediction_row(
+            "2027-09-14",
+            event_name="No event",
+            has_event=0,
+            max_attendance=0,
+            total_attendance=0,
+        ),
+    ]
+
+
+future_df = pd.DataFrame(future_rows)
+
+# Predict future traffic using the trained Random Forest
+future_df["predicted_traffic"] = model.predict(future_df[FEATURES])
+
+
+# ============================================================
+# Historic average comparison
+# ============================================================
+
+historic_lookup = train.groupby(["month", "day_of_week"])[TARGET].mean().reset_index()
+historic_lookup = historic_lookup.rename(columns={TARGET: "historic_average"})
+
+future_df = future_df.merge(
+    historic_lookup,
+    on=["month", "day_of_week"],
+    how="left"
+)
+
+overall_average = train[TARGET].mean()
+future_df["historic_average"] = future_df["historic_average"].fillna(overall_average)
+
+
+# ============================================================
+# Assistance calculations
+# ============================================================
+
+# Data-driven threshold:
+# 80th percentile = traffic level higher than 80% of historical training days
+ASSISTANCE_THRESHOLD = train[TARGET].quantile(0.80)
+
+print(f"\nAssistance threshold: {ASSISTANCE_THRESHOLD:,.0f} vehicles/day")
+
+future_df["difference"] = future_df["predicted_traffic"] - future_df["historic_average"]
+future_df["percent_change"] = (future_df["difference"] / future_df["historic_average"]) * 100
+
+future_df["vehicles_above_threshold"] = future_df["predicted_traffic"] - ASSISTANCE_THRESHOLD
+future_df["assistance_needed"] = future_df["predicted_traffic"] > ASSISTANCE_THRESHOLD
+
+future_df["congestion"] = future_df["predicted_traffic"].apply(congestion_level)
+
+display_df = future_df.copy()
 
 
 # ============================================================
 # Terminal output
 # ============================================================
 
-print("\nTraffic Assistance Display Data")
+print("\nFuture Traffic Assistance Display Data")
 print(
     display_df[
         [
             "date_display",
+            "event_name",
             "historic_average",
             "predicted_traffic",
             "difference",
@@ -288,11 +422,11 @@ print(
 # Matplotlib number-style display
 # ============================================================
 
-fig, ax = plt.subplots(figsize=(12, 7))
+fig, ax = plt.subplots(figsize=(13, 7))
 ax.axis("off")
 
 fig.suptitle(
-    "Traffic Forecast Assistance Display",
+    "Future Traffic Forecast Assistance Display",
     fontsize=18,
     fontweight="bold"
 )
@@ -308,11 +442,13 @@ ax.text(
     fontsize=12
 )
 
-latest = display_df.iloc[-1]
+# Main card uses the first future prediction
+latest = display_df.iloc[0]
 assistance_text = "YES" if latest["assistance_needed"] else "NO"
 
 summary_text = (
-    f"Selected Date: {latest['date_display']}\n\n"
+    f"Selected Date: {latest['date_display']}\n"
+    f"Scenario: {latest['event_name']}\n\n"
     f"Historic Average: {latest['historic_average']:,.0f} vehicles/day\n"
     f"Predicted Traffic: {latest['predicted_traffic']:,.0f} vehicles/day\n"
     f"Difference: {latest['difference']:+,.0f} vehicles/day\n"
@@ -327,7 +463,7 @@ ax.text(
     summary_text,
     ha="center",
     va="center",
-    fontsize=15,
+    fontsize=14,
     bbox=dict(
         boxstyle="round,pad=0.8",
         edgecolor="black",
@@ -340,16 +476,18 @@ table_data = []
 for _, row in display_df.iterrows():
     table_data.append([
         row["date_display"],
+        str(row["event_name"])[:28],
         f"{row['historic_average']:,.0f}",
         f"{row['predicted_traffic']:,.0f}",
         f"{row['difference']:+,.0f}",
         f"{row['percent_change']:+.1f}%",
         row["congestion"],
-        "YES" if row["assistance_needed"] else "NO"
+        "YES" if row["assistance_needed"] else "NO",
     ])
 
 column_labels = [
     "Date",
+    "Event",
     "Historic Avg",
     "Predicted",
     "Difference",
@@ -364,16 +502,16 @@ table = ax.table(
     loc="lower center",
     cellLoc="center",
     colLoc="center",
-    bbox=[0.02, 0.04, 0.96, 0.36]
+    bbox=[0.01, 0.04, 0.98, 0.36]
 )
 
 table.auto_set_font_size(False)
-table.set_fontsize(10)
+table.set_fontsize(8.5)
 table.scale(1, 1.5)
 
 plt.tight_layout()
 
-output_file = BASE_DIR / "traffic_forecast_display.png"
+output_file = BASE_DIR / "future_traffic_forecast_display.png"
 plt.savefig(output_file, dpi=300)
 
 print(f"\nSaved display to: {output_file}")
