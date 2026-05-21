@@ -91,7 +91,7 @@ plt.title("Feature importance — model with event data")
 plt.xlabel("Importance score")
 plt.tight_layout()
 plt.savefig("feature_importance_with_events.png", dpi=150)
-plt.show()
+plt.close()
 
 # ── Actual vs predicted plot ──────────────────────────────────
 test = test.sort_values("date")
@@ -104,9 +104,10 @@ ax.set_ylabel("Vehicles per day")
 ax.legend()
 plt.tight_layout()
 plt.savefig("actual_vs_predicted_with_events.png", dpi=150)
-plt.show()
+plt.close()
 
-print("\n✓ Done.")
+print("\n✓ Plots saved.")
+
 # ── Predict a specific day ────────────────────────────────────
 def predict_day(date_str, has_event=0, max_attendance=0, total_attendance=0):
     date = pd.Timestamp(date_str)
@@ -127,10 +128,40 @@ def predict_day(date_str, has_event=0, max_attendance=0, total_attendance=0):
     print(f"Predicted  : {prediction:.0f} vehicles")
     print(f"Congestion : {congestion}")
     return prediction
-# Weekend SCG game
-predict_day("2027-07-10", has_event=1, max_attendance=45000, total_attendance=45000)
 
-# Same weekend day no event
-predict_day("2027-07-10")
-# Randwick race day
-predict_day("2027-03-20", has_event=1, max_attendance=25000, total_attendance=25000)
+# ── Auto predict using Ben's future event data ────────────────
+future_events = pd.read_csv("../../ben/events_cleaned.csv")
+future_events["date"] = pd.to_datetime(future_events["start"]).dt.tz_localize(None).dt.normalize()
+
+def predict_with_auto_events(date_str):
+    date = pd.Timestamp(date_str).normalize()
+    events_that_day = future_events[future_events["date"] == date]
+
+    if len(events_that_day) > 0:
+        has_event        = 1
+        max_attendance   = events_that_day["intensity"].max() * 50000
+        total_attendance = max_attendance * len(events_that_day)
+        print(f"\nEvents found on {date_str}:")
+        for e in events_that_day["summary"].tolist():
+            print(f"  - {e}")
+    else:
+        has_event        = 0
+        max_attendance   = 0
+        total_attendance = 0
+        print(f"\nNo events found on {date_str}")
+
+    return predict_day(date_str, has_event, max_attendance, total_attendance)
+
+# ── Test predictions ──────────────────────────────────────────
+print("\n=== FUTURE PREDICTIONS ===")
+predict_with_auto_events("2026-05-30")
+predict_with_auto_events("2026-06-01")
+predict_with_auto_events("2026-07-01")
+
+
+print("\n=== FUTURE PREDICTIONS beyond 2026 ===")
+# 2027 event with known attendance
+predict_day("2027-09-13", has_event=1, max_attendance=45000, total_attendance=45000)
+
+# 2027 normal day
+predict_day("2027-09-14")
