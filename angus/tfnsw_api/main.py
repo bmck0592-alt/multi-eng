@@ -21,27 +21,42 @@ hourly = hourly.drop(columns="hour_col")
 hourly = hourly.dropna(subset=["vehicle_count"])
 hourly = hourly.sort_values(["date", "hour"]).reset_index(drop=True)
 
-# ── Load and combine all event files ─────────────────────────
+# ── Load all event files ──────────────────────────────────────
 scg      = pd.read_csv("../../scg_events_2013_2019_clean.csv")
 hordern  = pd.read_csv("../../hordern_events_2013_2019_clean.csv")
 randwick = pd.read_csv("../../ben/royal_randwick_events_2013_2019_clean_with_estimated_attendance.csv")
+allianz  = pd.read_csv("../../allianz_sfs_events_2013_2019_clean.csv")
 
-scg = scg.rename(columns={"attendance": "estimated_attendance"})
+# Rename and fill attendance with venue capacity estimates
+scg     = scg.rename(columns={"attendance": "estimated_attendance"})
+allianz = allianz.rename(columns={"attendance": "estimated_attendance"})
 
-scg["event_hour"]      = pd.to_numeric(scg["start_hour"], errors="coerce").fillna(18).astype(int)
-hordern["event_hour"]  = pd.to_numeric(hordern["hour"],   errors="coerce").fillna(18).astype(int)
-randwick["event_hour"] = pd.to_numeric(randwick["hour"],  errors="coerce").fillna(18).astype(int)
+scg["estimated_attendance"]      = scg["estimated_attendance"].fillna(35000)
+hordern["estimated_attendance"]  = hordern["estimated_attendance"].fillna(5500)
+randwick["estimated_attendance"] = randwick["estimated_attendance"].fillna(20000)
+allianz["estimated_attendance"]  = allianz["estimated_attendance"].fillna(40000)
 
+# Get event hours
+scg["event_hour"]      = pd.to_numeric(scg["start_hour"],    errors="coerce").fillna(18).astype(int)
+hordern["event_hour"]  = pd.to_numeric(hordern["hour"],      errors="coerce").fillna(18).astype(int)
+randwick["event_hour"] = pd.to_numeric(randwick["hour"],     errors="coerce").fillna(18).astype(int)
+allianz["event_hour"]  = pd.to_numeric(allianz["start_hour"],errors="coerce").fillna(18).astype(int)
+
+# ── Combine all events ────────────────────────────────────────
 events = pd.concat([
     scg[["date", "estimated_attendance", "event_hour"]],
     hordern[["date", "estimated_attendance", "event_hour"]],
-    randwick[["date", "estimated_attendance", "event_hour"]]
+    randwick[["date", "estimated_attendance", "event_hour"]],
+    allianz[["date", "estimated_attendance", "event_hour"]]
 ], ignore_index=True)
 events["date"] = pd.to_datetime(events["date"]).dt.normalize()
 
+print(f"Total events across all venues: {len(events)}")
+print(events.groupby(pd.to_datetime(events["date"]).dt.year)["estimated_attendance"].count().rename("event_count"))
+
 event_hours = []
 for _, row in events.iterrows():
-    for h in range(int(row["event_hour"]), min(int(row["event_hour"]) + 5, 24)):
+    for h in range(int(row["event_hour"]), min(int(row["event_hour"]) + 4, 24)):
         event_hours.append({
             "date":             row["date"],
             "hour":             h,
@@ -76,13 +91,13 @@ FEATURES = [
 TARGET = "vehicle_count"
 
 # ── Train/test split ──────────────────────────────────────────
-train = hourly[(hourly["year"] >= 2017) & (hourly["year"] <= 2018)]
+train = hourly[(hourly["year"] >= 2013) & (hourly["year"] <= 2018)]
 test  = hourly[hourly["year"] == 2019]
 
 X_train, y_train = train[FEATURES], train[TARGET]
 X_test,  y_test  = test[FEATURES],  test[TARGET]
 
-print(f"Training rows      : {len(X_train):,}")
+print(f"\nTraining rows      : {len(X_train):,}")
 print(f"Test rows          : {len(X_test):,}")
 print(f"Event hours in test: {test['has_event'].sum():.0f}")
 
@@ -118,9 +133,9 @@ plt.tight_layout()
 plt.savefig("feature_importance_hourly.png", dpi=150)
 plt.close()
 
-print("\n✓ Plots saved.")
+print("\n✓ Model plots saved.")
 
-# ── Core prediction function (per hour) ───────────────────────
+# ── Core prediction functions ─────────────────────────────────
 def predict_hour(date_str, hour, has_event=0, max_attendance=0, total_attendance=0):
     date = pd.Timestamp(date_str)
     input_data = pd.DataFrame([{
@@ -137,21 +152,16 @@ def predict_hour(date_str, hour, has_event=0, max_attendance=0, total_attendance
     }])
     return model.predict(input_data)[0]
 
-# ── Daily summary prediction ──────────────────────────────────
 def predict_day_summary(date_str, has_event=0, max_attendance=0,
-                         total_attendance=0, event_hour=18):
+                         total_attendance=0, event_hour=18, event_duration=4):
     hourly_preds = []
     for h in range(24):
-        h_event = has_event if (has_event and h >= event_hour) else 0
-        hourly_preds.append(predict_hour(
-            date_str, h, h_event, max_attendance, total_attendance
-        ))
-
+        h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
+        hourly_preds.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance))
     total      = sum(hourly_preds)
     peak_hour  = hourly_preds.index(max(hourly_preds))
     peak_count = max(hourly_preds)
     congestion = "Low" if total < 10000 else "Moderate" if total < 13000 else "High" if total < 15000 else "Severe"
-
     print(f"\n{'='*50}")
     print(f"DATE SUMMARY: {date_str}")
     print(f"{'='*50}")
@@ -161,40 +171,73 @@ def predict_day_summary(date_str, has_event=0, max_attendance=0,
     print(f"Event day        : {'Yes' if has_event else 'No'}")
     return total, hourly_preds
 
-# ── Hourly breakdown prediction ───────────────────────────────
 def predict_day_hourly(date_str, has_event=0, max_attendance=0,
-                        total_attendance=0, event_hour=18):
+                        total_attendance=0, event_hour=18, event_duration=4):
     print(f"\n{'='*50}")
     print(f"HOURLY BREAKDOWN: {date_str}")
     print(f"{'='*50}")
     print(f"{'Hour':<8} {'Vehicles':>10} {'Congestion':>12}")
     print("-" * 32)
-
     hourly_preds = []
     for h in range(24):
-        h_event = has_event if (has_event and h >= event_hour) else 0
+        h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
         pred    = predict_hour(date_str, h, h_event, max_attendance, total_attendance)
         level   = "Low" if pred < 300 else "Moderate" if pred < 600 else "High" if pred < 900 else "Severe"
         marker  = " ◀ EVENT" if h_event else ""
         print(f"{h:02d}:00   {pred:>10.0f} {level:>12}{marker}")
         hourly_preds.append(pred)
-
     return hourly_preds
 
-# ── Auto predict using Ben's future event data ────────────────
-future_events = pd.read_csv("../../ben/events_cleaned.csv")
-future_events["date"]       = pd.to_datetime(future_events["start"]).dt.tz_localize(None).dt.normalize()
-future_events["event_hour"] = pd.to_datetime(future_events["start"]).dt.tz_localize(None).dt.hour
+def plot_future_day(date_str, has_event=0, max_attendance=0,
+                    total_attendance=0, event_hour=18, event_duration=4,
+                    event_name="Event"):
+    hours = list(range(24))
+    predictions = []
+    for h in hours:
+        h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
+        predictions.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance))
 
-def predict_with_auto_events(date_str, show_hourly=True):
+    total      = sum(predictions)
+    congestion = "Low" if total < 10000 else "Moderate" if total < 13000 else "High" if total < 15000 else "Severe"
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(hours, predictions, color="#89b4fa", linewidth=2.5, marker="o", label="Predicted traffic")
+
+    if has_event:
+        for h in range(event_hour, min(event_hour + event_duration, 24)):
+            ax.axvspan(h - 0.5, h + 0.5, alpha=0.2, color="#f9e2af")
+        ax.axvspan(0, 0, alpha=0.2, color="#f9e2af", label=f"Event: {event_name}")
+        ax.axvline(x=event_hour, color="#f38ba8", linewidth=2,
+                   linestyle="--", label=f"Event starts {event_hour:02d}:00")
+
+    ax.set_ylim(0, max(predictions) * 1.2)
+    ax.set_title(f"Predicted Hourly Traffic — {date_str}  |  Total: {total:.0f} vehicles  |  Congestion: {congestion}")
+    ax.set_xlabel("Hour of day")
+    ax.set_ylabel("Vehicles per hour")
+    ax.set_xticks(range(24))
+    ax.set_xticklabels([f"{h:02d}:00" for h in range(24)], rotation=45)
+    ax.legend()
+    plt.tight_layout()
+    filename = f"predicted_hourly_{date_str}.png"
+    plt.savefig(filename, dpi=150)
+    plt.close()
+    print(f"✓ Saved {filename}")
+
+# ── Load Ben's future event data ─────────────────────────────
+future_events = pd.read_csv("../../ben/events_cleaned_AEDT.csv")
+future_events["date"]       = pd.to_datetime(future_events["start"]).dt.normalize()
+future_events["event_hour"] = pd.to_datetime(future_events["start"]).dt.hour
+
+def predict_with_auto_events(date_str):
     date            = pd.Timestamp(date_str).normalize()
     events_that_day = future_events[future_events["date"] == date]
 
     if len(events_that_day) > 0:
         has_event        = 1
-        max_attendance   = events_that_day["intensity"].max() * 50000
+        max_attendance   = events_that_day["intensity"].max() * 35000
         total_attendance = max_attendance
         event_hour       = int(events_that_day["event_hour"].iloc[0])
+        event_name       = events_that_day["summary"].iloc[0]
         print(f"\nEvents on {date_str}:")
         for _, e in events_that_day.iterrows():
             print(f"  - {e['summary']} (starts {int(e['event_hour']):02d}:00)")
@@ -203,62 +246,29 @@ def predict_with_auto_events(date_str, show_hourly=True):
         max_attendance   = 0
         total_attendance = 0
         event_hour       = 18
+        event_name       = ""
         print(f"\nNo events on {date_str}")
 
     predict_day_summary(date_str, has_event, max_attendance, total_attendance, event_hour)
-
-    if show_hourly:
-        predict_day_hourly(date_str, has_event, max_attendance, total_attendance, event_hour)
+    predict_day_hourly(date_str, has_event, max_attendance, total_attendance, event_hour)
+    plot_future_day(date_str, has_event, max_attendance, total_attendance, event_hour,
+                    event_name=event_name)
 
 # ── Run predictions ───────────────────────────────────────────
-print("\n=== AUTO EVENT PREDICTIONS ===")
-predict_with_auto_events("2026-05-30", show_hourly=True)   # AFL game
-predict_with_auto_events("2026-06-01", show_hourly=True)   # no event
+print("\n=== 2026 PREDICTIONS (AUTO) ===")
+predict_with_auto_events("2026-05-30")   # has event
+predict_with_auto_events("2026-06-01")   # no event
 
-print("\n=== MANUAL PREDICTIONS (2027) ===")
-# Known event
-predict_day_summary("2027-09-13", has_event=1, max_attendance=45000,
-                     total_attendance=45000, event_hour=19)
-predict_day_hourly("2027-09-13",  has_event=1, max_attendance=45000,
-                    total_attendance=45000, event_hour=19)
+print("\n=== 2027 PREDICTION (MANUAL with event) ===")
+predict_day_summary("2027-09-13", has_event=1, max_attendance=35000,
+                     total_attendance=35000, event_hour=19, event_duration=4)
+predict_day_hourly("2027-09-13",  has_event=1, max_attendance=35000,
+                    total_attendance=35000, event_hour=19, event_duration=4)
+plot_future_day("2027-09-13", has_event=1, max_attendance=35000,
+                total_attendance=35000, event_hour=19, event_duration=4,
+                event_name="Major SCG Event")
 
-# Normal day
-predict_day_summary("2027-09-14")
-predict_day_hourly("2027-09-14")
-# ── Plot actual vs predicted for a specific past date ─────────
-def plot_day(date_str):
-    date = pd.Timestamp(date_str).normalize()
-    sample = test[test["date"] == date].sort_values("hour")
-
-    if len(sample) == 0:
-        print(f"No data found for {date_str} — must be a date in 2019")
-        return
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(sample["hour"], sample["vehicle_count"], label="Actual",
-            color="#89b4fa", linewidth=2, marker="o")
-    ax.plot(sample["hour"], sample["predicted"],     label="Predicted",
-            color="#f38ba8", linewidth=2, linestyle="--", marker="o")
-
-    # Shade event hours
-    event_hrs = sample[sample["has_event"] == 1]["hour"].tolist()
-    for h in event_hrs:
-        ax.axvspan(h - 0.5, h + 0.5, alpha=0.15, color="yellow", label="_nolegend_")
-
-    if event_hrs:
-        ax.axvspan(0, 0, alpha=0.15, color="yellow", label="Event hours")
-
-    ax.set_title(f"Actual vs Predicted by hour — {date_str}")
-    ax.set_xlabel("Hour of day")
-    ax.set_ylabel("Vehicles per hour")
-    ax.set_xticks(range(24))
-    ax.legend()
-    plt.tight_layout()
-    filename = f"hourly_plot_{date_str}.png"
-    plt.savefig(filename, dpi=150)
-    plt.show()
-    print(f"✓ Saved {filename}")
-
-# Try it — must be a date in 2019
-plot_day("2019-03-02")
-plot_day("2019-07-06")
+print("\n=== 2027 PREDICTION (MANUAL no event) ===")
+predict_day_summary("2027-09-13", has_event=0, )
+predict_day_hourly("2027-09-13",  has_event=0, )
+plot_future_day("2027-09-13", has_event=0,)
