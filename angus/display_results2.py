@@ -51,7 +51,6 @@ traffic = pd.read_csv(TRAFFIC_FILE)
 
 traffic["date"] = pd.to_datetime(traffic["date"]).dt.tz_localize(None).dt.normalize()
 
-
 # ============================================================
 # Load event data
 # ============================================================
