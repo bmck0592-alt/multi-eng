@@ -340,3 +340,84 @@ plot_future_day("2027-09-13", has_event=1, max_attendance=35000,
 print("\n=== 2027 PREDICTION (MANUAL no event) ===")
 predict_day_summary("2027-09-13", has_event=0)
 predict_day_hourly("2027-09-13",  has_event=0)
+# ── Full year 2019 actual vs predicted plot ───────────────────
+daily_test = test.copy()
+daily_test = daily_test.groupby("date").agg(
+    actual    = ("vehicle_count", "sum"),
+    predicted = ("predicted", "sum")
+).reset_index()
+
+fig, ax = plt.subplots(figsize=(14, 5))
+ax.plot(daily_test["date"], daily_test["actual"],    label="Actual",    color="#89b4fa", linewidth=1.5)
+ax.plot(daily_test["date"], daily_test["predicted"], label="Predicted", color="#f38ba8", linewidth=1.5, linestyle="--")
+ax.set_title("Actual vs Predicted Daily Traffic — ANZAC Parade 2019")
+ax.set_xlabel("Date")
+ax.set_ylabel("Vehicles per day")
+ax.legend()
+plt.tight_layout()
+plt.savefig("actual_vs_predicted_2019.png", dpi=150)
+plt.close()
+print("✓ Saved actual_vs_predicted_2019.png")
+# ── Three way comparison: no event vs Hordern vs Allianz ──────
+hours = list(range(24))
+no_event_preds  = []
+hordern_preds   = []
+allianz_preds   = []
+
+for h in hours:
+    pre_start = 19
+    post_end  = 19 + 3 + 2
+    h_event = 1 if pre_start <= h < post_end else 0
+
+    no_event_preds.append(predict_hour("2027-09-13", h, 0, 0, 0, -1))
+    hordern_preds.append(predict_hour("2027-09-13", h, h_event, 5500, 5500, 0))
+    allianz_preds.append(predict_hour("2027-09-13", h, h_event, 25000, 25000, 2))
+
+fig, ax = plt.subplots(figsize=(12, 5))
+ax.plot(hours, no_event_preds, color="#89b4fa", linewidth=2.5, marker="o",
+        linestyle="--", label="No event")
+ax.plot(hours, hordern_preds,  color="#a6e3a1", linewidth=2.5, marker="o",
+        label="Hordern concert (5,500 attendance)")
+ax.plot(hours, allianz_preds,  color="#f38ba8", linewidth=2.5, marker="o",
+        label="Allianz Stadium A-League (25,000 attendance)")
+
+for h in range(18, 24):
+    ax.axvspan(h - 0.5, h + 0.5, alpha=0.15, color="#f9e2af")
+ax.axvline(x=19, color="gray", linewidth=1.5, linestyle=":", alpha=0.7, label="Kickoff 19:00")
+
+ax.set_ylim(0, max(allianz_preds) * 1.2)
+ax.set_title("Traffic Impact by Venue Size — ANZAC Parade 2027-09-13")
+ax.set_xlabel("Hour of day")
+ax.set_ylabel("Vehicles per hour")
+ax.set_xticks(range(24))
+ax.set_xticklabels([f"{h:02d}:00" for h in range(24)], rotation=45)
+ax.legend()
+plt.tight_layout()
+plt.savefig("venue_comparison.png", dpi=150)
+plt.close()
+print("✓ Saved venue_comparison.png")
+
+
+# ── Actual vs predicted for a specific past day ───────────────
+sample_date = pd.Timestamp("2019-10-19").normalize()
+sample = test[test["date"] == sample_date].sort_values("hour")
+
+if len(sample) > 0:
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(sample["hour"], sample["vehicle_count"], color="#89b4fa", linewidth=2.5,
+            marker="o", label="Actual traffic")
+    ax.plot(sample["hour"], sample["predicted"],     color="#f38ba8", linewidth=2.5,
+            marker="o", linestyle="--", label="Predicted traffic")
+    ax.set_ylim(0, max(sample["vehicle_count"].max(), sample["predicted"].max()) * 1.2)
+    ax.set_title(f"Actual vs Predicted — ANZAC Parade {sample_date.date()}  |  MAE: {abs(sample['vehicle_count'] - sample['predicted']).mean():.0f} vehicles/hour")
+    ax.set_xlabel("Hour of day")
+    ax.set_ylabel("Vehicles per hour")
+    ax.set_xticks(range(24))
+    ax.set_xticklabels([f"{h:02d}:00" for h in range(24)], rotation=45)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig("actual_vs_predicted_sample_day.png", dpi=150)
+    plt.close()
+    print(f"✓ Saved actual_vs_predicted_sample_day.png")
+else:
+    print("Date not in test set — try another 2019 date")
