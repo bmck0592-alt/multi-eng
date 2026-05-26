@@ -25,7 +25,7 @@ hourly = hourly.sort_values(["date", "hour"]).reset_index(drop=True)
 scg      = pd.read_csv("../../scg_events_2013_2019_clean.csv")
 hordern  = pd.read_csv("../../hordern_events_2013_2019_clean.csv")
 randwick = pd.read_csv("../../ben/royal_randwick_events_2013_2019_clean_with_estimated_attendance.csv")
-allianz  = pd.read_csv("../../allianz_sfs_events_2013_2019_clean.csv")
+allianz  = pd.read_csv("../../allianz_sydney_football_stadium_events_clean.csv")
 
 # Rename and fill attendance with venue capacity estimates
 scg     = scg.rename(columns={"attendance": "estimated_attendance"})
@@ -37,17 +37,23 @@ randwick["estimated_attendance"] = randwick["estimated_attendance"].fillna(20000
 allianz["estimated_attendance"]  = allianz["estimated_attendance"].fillna(40000)
 
 # Get event hours
-scg["event_hour"]      = pd.to_numeric(scg["start_hour"],    errors="coerce").fillna(18).astype(int)
-hordern["event_hour"]  = pd.to_numeric(hordern["hour"],      errors="coerce").fillna(18).astype(int)
-randwick["event_hour"] = pd.to_numeric(randwick["hour"],     errors="coerce").fillna(18).astype(int)
-allianz["event_hour"]  = pd.to_numeric(allianz["start_hour"],errors="coerce").fillna(18).astype(int)
+scg["event_hour"]      = pd.to_numeric(scg["start_hour"],     errors="coerce").fillna(18).astype(int)
+hordern["event_hour"]  = pd.to_numeric(hordern["hour"],       errors="coerce").fillna(18).astype(int)
+randwick["event_hour"] = pd.to_numeric(randwick["hour"],      errors="coerce").fillna(18).astype(int)
+allianz["event_hour"]  = pd.to_numeric(allianz["start_hour"], errors="coerce").fillna(18).astype(int)
+
+# Add venue type
+scg["venue_type"]      = 2
+hordern["venue_type"]  = 0
+randwick["venue_type"] = 1
+allianz["venue_type"]  = 2
 
 # ── Combine all events ────────────────────────────────────────
 events = pd.concat([
-    scg[["date", "estimated_attendance", "event_hour"]],
-    hordern[["date", "estimated_attendance", "event_hour"]],
-    randwick[["date", "estimated_attendance", "event_hour"]],
-    allianz[["date", "estimated_attendance", "event_hour"]]
+    scg[["date", "estimated_attendance", "event_hour", "venue_type"]],
+    hordern[["date", "estimated_attendance", "event_hour", "venue_type"]],
+    randwick[["date", "estimated_attendance", "event_hour", "venue_type"]],
+    allianz[["date", "estimated_attendance", "event_hour", "venue_type"]]
 ], ignore_index=True)
 events["date"] = pd.to_datetime(events["date"]).dt.normalize()
 
@@ -62,13 +68,15 @@ for _, row in events.iterrows():
             "hour":             h,
             "has_event":        1,
             "max_attendance":   row["estimated_attendance"],
-            "total_attendance": row["estimated_attendance"]
+            "total_attendance": row["estimated_attendance"],
+            "venue_type":       row["venue_type"]
         })
 
 event_hours_df = pd.DataFrame(event_hours).groupby(["date", "hour"]).agg(
     has_event        = ("has_event", "max"),
     max_attendance   = ("max_attendance", "max"),
-    total_attendance = ("total_attendance", "sum")
+    total_attendance = ("total_attendance", "sum"),
+    venue_type       = ("venue_type", "max")
 ).reset_index()
 
 # ── Merge ─────────────────────────────────────────────────────
@@ -76,6 +84,7 @@ hourly = hourly.merge(event_hours_df, on=["date", "hour"], how="left")
 hourly["has_event"]        = hourly["has_event"].fillna(0)
 hourly["max_attendance"]   = hourly["max_attendance"].fillna(0)
 hourly["total_attendance"] = hourly["total_attendance"].fillna(0)
+hourly["venue_type"]       = hourly["venue_type"].fillna(-1)
 
 # ── Feature engineering ───────────────────────────────────────
 hourly["day_of_year"]    = hourly["date"].dt.dayofyear
@@ -86,7 +95,7 @@ hourly["school_holiday"] = hourly["school_holiday"].astype(int)
 FEATURES = [
     "hour", "month", "day_of_week", "day_of_year",
     "is_weekend", "public_holiday", "school_holiday",
-    "has_event", "max_attendance", "total_attendance"
+    "has_event", "max_attendance", "total_attendance", "venue_type"
 ]
 TARGET = "vehicle_count"
 
@@ -94,12 +103,22 @@ TARGET = "vehicle_count"
 train = hourly[(hourly["year"] >= 2013) & (hourly["year"] <= 2018)]
 test  = hourly[hourly["year"] == 2019]
 
-X_train, y_train = train[FEATURES], train[TARGET]
+# Undersample non-event hours
+event_train     = train[train["has_event"] == 1]
+non_event_train = train[train["has_event"] == 0].sample(
+    n=len(event_train) * 10,
+    random_state=42
+)
+train_balanced = pd.concat([event_train, non_event_train]).sample(frac=1, random_state=42)
+
+X_train, y_train = train_balanced[FEATURES], train_balanced[TARGET]
 X_test,  y_test  = test[FEATURES],  test[TARGET]
 
-print(f"\nTraining rows      : {len(X_train):,}")
-print(f"Test rows          : {len(X_test):,}")
-print(f"Event hours in test: {test['has_event'].sum():.0f}")
+print(f"\nEvent hours in training    : {len(event_train):,}")
+print(f"Non-event hours in training: {len(non_event_train):,}")
+print(f"\nTraining rows (balanced) : {len(X_train):,}")
+print(f"Test rows                : {len(X_test):,}")
+print(f"Event hours in test      : {test['has_event'].sum():.0f}")
 
 # ── Train model ───────────────────────────────────────────────
 model = RandomForestRegressor(
@@ -135,8 +154,17 @@ plt.close()
 
 print("\n✓ Model plots saved.")
 
+# ── Attendance multiplier ─────────────────────────────────────
+def apply_event_multiplier(base_pred, max_attendance):
+    if max_attendance <= 0:
+        return base_pred
+    excess     = max(0, max_attendance - 5500)
+    multiplier = 1 + (excess / 10000) * 0.05
+    return base_pred * multiplier
+
 # ── Core prediction functions ─────────────────────────────────
-def predict_hour(date_str, hour, has_event=0, max_attendance=0, total_attendance=0):
+def predict_hour(date_str, hour, has_event=0, max_attendance=0,
+                 total_attendance=0, venue_type=-1):
     date = pd.Timestamp(date_str)
     input_data = pd.DataFrame([{
         "hour":             hour,
@@ -148,16 +176,22 @@ def predict_hour(date_str, hour, has_event=0, max_attendance=0, total_attendance
         "school_holiday":   0,
         "has_event":        has_event,
         "max_attendance":   max_attendance,
-        "total_attendance": total_attendance
+        "total_attendance": total_attendance,
+        "venue_type":       venue_type
     }])
-    return model.predict(input_data)[0]
+    base = model.predict(input_data)[0]
+    if has_event:
+        return apply_event_multiplier(base, max_attendance)
+    return base
 
 def predict_day_summary(date_str, has_event=0, max_attendance=0,
-                         total_attendance=0, event_hour=18, event_duration=4):
+                         total_attendance=0, event_hour=18,
+                         event_duration=4, venue_type=-1):
     hourly_preds = []
     for h in range(24):
         h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
-        hourly_preds.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance))
+        vt      = venue_type if h_event else -1
+        hourly_preds.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance, vt))
     total      = sum(hourly_preds)
     peak_hour  = hourly_preds.index(max(hourly_preds))
     peak_count = max(hourly_preds)
@@ -172,7 +206,8 @@ def predict_day_summary(date_str, has_event=0, max_attendance=0,
     return total, hourly_preds
 
 def predict_day_hourly(date_str, has_event=0, max_attendance=0,
-                        total_attendance=0, event_hour=18, event_duration=4):
+                        total_attendance=0, event_hour=18,
+                        event_duration=4, venue_type=-1):
     print(f"\n{'='*50}")
     print(f"HOURLY BREAKDOWN: {date_str}")
     print(f"{'='*50}")
@@ -181,7 +216,8 @@ def predict_day_hourly(date_str, has_event=0, max_attendance=0,
     hourly_preds = []
     for h in range(24):
         h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
-        pred    = predict_hour(date_str, h, h_event, max_attendance, total_attendance)
+        vt      = venue_type if h_event else -1
+        pred    = predict_hour(date_str, h, h_event, max_attendance, total_attendance, vt)
         level   = "Low" if pred < 300 else "Moderate" if pred < 600 else "High" if pred < 900 else "Severe"
         marker  = " ◀ EVENT" if h_event else ""
         print(f"{h:02d}:00   {pred:>10.0f} {level:>12}{marker}")
@@ -190,12 +226,13 @@ def predict_day_hourly(date_str, has_event=0, max_attendance=0,
 
 def plot_future_day(date_str, has_event=0, max_attendance=0,
                     total_attendance=0, event_hour=18, event_duration=4,
-                    event_name="Event"):
+                    venue_type=-1, event_name="Event"):
     hours = list(range(24))
     predictions = []
     for h in hours:
         h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
-        predictions.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance))
+        vt      = venue_type if h_event else -1
+        predictions.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance, vt))
 
     total      = sum(predictions)
     congestion = "Low" if total < 10000 else "Moderate" if total < 13000 else "High" if total < 15000 else "Severe"
@@ -238,6 +275,8 @@ def predict_with_auto_events(date_str):
         total_attendance = max_attendance
         event_hour       = int(events_that_day["event_hour"].iloc[0])
         event_name       = events_that_day["summary"].iloc[0]
+        venue            = events_that_day["venue"].iloc[0] if "venue" in events_that_day.columns else "scg"
+        venue_type       = 2 if "scg" in str(venue).lower() or "allianz" in str(venue).lower() else 1 if "randwick" in str(venue).lower() else 0
         print(f"\nEvents on {date_str}:")
         for _, e in events_that_day.iterrows():
             print(f"  - {e['summary']} (starts {int(e['event_hour']):02d}:00)")
@@ -247,12 +286,15 @@ def predict_with_auto_events(date_str):
         total_attendance = 0
         event_hour       = 18
         event_name       = ""
+        venue_type       = -1
         print(f"\nNo events on {date_str}")
 
-    predict_day_summary(date_str, has_event, max_attendance, total_attendance, event_hour)
-    predict_day_hourly(date_str, has_event, max_attendance, total_attendance, event_hour)
-    plot_future_day(date_str, has_event, max_attendance, total_attendance, event_hour,
-                    event_name=event_name)
+    predict_day_summary(date_str, has_event, max_attendance, total_attendance,
+                        event_hour, venue_type=venue_type)
+    predict_day_hourly(date_str, has_event, max_attendance, total_attendance,
+                       event_hour, venue_type=venue_type)
+    plot_future_day(date_str, has_event, max_attendance, total_attendance,
+                    event_hour, venue_type=venue_type, event_name=event_name)
 
 # ── Run predictions ───────────────────────────────────────────
 print("\n=== 2026 PREDICTIONS (AUTO) ===")
@@ -261,14 +303,24 @@ predict_with_auto_events("2026-06-01")   # no event
 
 print("\n=== 2027 PREDICTION (MANUAL with event) ===")
 predict_day_summary("2027-09-13", has_event=1, max_attendance=35000,
-                     total_attendance=35000, event_hour=19, event_duration=4)
+                     total_attendance=35000, event_hour=19,
+                     event_duration=4, venue_type=2)
 predict_day_hourly("2027-09-13",  has_event=1, max_attendance=35000,
-                    total_attendance=35000, event_hour=19, event_duration=4)
+                    total_attendance=35000, event_hour=19,
+                    event_duration=4, venue_type=2)
 plot_future_day("2027-09-13", has_event=1, max_attendance=35000,
                 total_attendance=35000, event_hour=19, event_duration=4,
-                event_name="Major SCG Event")
+                venue_type=2, event_name="Major SCG Event")
 
 print("\n=== 2027 PREDICTION (MANUAL no event) ===")
-predict_day_summary("2027-09-13", has_event=0, )
-predict_day_hourly("2027-09-13",  has_event=0, )
-plot_future_day("2027-09-13", has_event=0,)
+predict_day_summary("2027-09-13", has_event=0)
+predict_day_hourly("2027-09-13",  has_event=0)
+
+print('\n=== VENUE TYPE COMPARISON ===')
+print('Same event, Hordern (venue_type=0):')
+pred_hordern = predict_hour('2027-09-13', 19, has_event=1, max_attendance=35000, total_attendance=35000, venue_type=0)
+print(f'Predicted: {pred_hordern:.0f}')
+print('Same event, SCG (venue_type=2):')
+pred_scg = predict_hour('2027-09-13', 19, has_event=1, max_attendance=35000, total_attendance=35000, venue_type=2)
+print(f'Predicted: {pred_scg:.0f}')
+print(f'Difference: {pred_scg - pred_hordern:.0f} vehicles')
