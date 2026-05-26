@@ -36,7 +36,7 @@ hordern["estimated_attendance"]  = hordern["estimated_attendance"].fillna(5500)
 randwick["estimated_attendance"] = randwick["estimated_attendance"].fillna(20000)
 allianz["estimated_attendance"]  = allianz["estimated_attendance"].fillna(40000)
 
-# Get event hours
+# Get event hours and duration
 scg["event_hour"]      = pd.to_numeric(scg["start_hour"],     errors="coerce").fillna(18).astype(int)
 hordern["event_hour"]  = pd.to_numeric(hordern["hour"],       errors="coerce").fillna(18).astype(int)
 randwick["event_hour"] = pd.to_numeric(randwick["hour"],      errors="coerce").fillna(18).astype(int)
@@ -60,9 +60,16 @@ events["date"] = pd.to_datetime(events["date"]).dt.normalize()
 print(f"Total events across all venues: {len(events)}")
 print(events.groupby(pd.to_datetime(events["date"]).dt.year)["estimated_attendance"].count().rename("event_count"))
 
+# ── Build event hours with pre/post game windows ──────────────
 event_hours = []
 for _, row in events.iterrows():
-    for h in range(int(row["event_hour"]), min(int(row["event_hour"]) + 4, 24)):
+    start      = int(row["event_hour"])
+    duration   = 3          # default game duration hours
+    end        = start + duration
+    pre_start  = max(0, start - 1)    # 1 hour before kickoff
+    post_end   = min(24, end + 2)     # 2 hours after final whistle
+
+    for h in range(pre_start, post_end):
         event_hours.append({
             "date":             row["date"],
             "hour":             h,
@@ -186,11 +193,13 @@ def predict_hour(date_str, hour, has_event=0, max_attendance=0,
 
 def predict_day_summary(date_str, has_event=0, max_attendance=0,
                          total_attendance=0, event_hour=18,
-                         event_duration=4, venue_type=-1):
+                         event_duration=3, venue_type=-1):
     hourly_preds = []
     for h in range(24):
-        h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
-        vt      = venue_type if h_event else -1
+        pre_start = event_hour - 1
+        post_end  = event_hour + event_duration + 2
+        h_event   = has_event if (has_event and pre_start <= h < post_end) else 0
+        vt        = venue_type if h_event else -1
         hourly_preds.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance, vt))
     total      = sum(hourly_preds)
     peak_hour  = hourly_preds.index(max(hourly_preds))
@@ -203,34 +212,48 @@ def predict_day_summary(date_str, has_event=0, max_attendance=0,
     print(f"Congestion level : {congestion}")
     print(f"Peak hour        : {peak_hour:02d}:00 ({peak_count:.0f} vehicles)")
     print(f"Event day        : {'Yes' if has_event else 'No'}")
+    if has_event:
+        print(f"Event window     : {event_hour-1:02d}:00 → {event_hour+event_duration+2:02d}:00")
     return total, hourly_preds
 
 def predict_day_hourly(date_str, has_event=0, max_attendance=0,
                         total_attendance=0, event_hour=18,
-                        event_duration=4, venue_type=-1):
+                        event_duration=3, venue_type=-1):
     print(f"\n{'='*50}")
     print(f"HOURLY BREAKDOWN: {date_str}")
     print(f"{'='*50}")
     print(f"{'Hour':<8} {'Vehicles':>10} {'Congestion':>12}")
     print("-" * 32)
     hourly_preds = []
+    pre_start = event_hour - 1
+    post_end  = event_hour + event_duration + 2
     for h in range(24):
-        h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
+        h_event = has_event if (has_event and pre_start <= h < post_end) else 0
         vt      = venue_type if h_event else -1
         pred    = predict_hour(date_str, h, h_event, max_attendance, total_attendance, vt)
         level   = "Low" if pred < 300 else "Moderate" if pred < 600 else "High" if pred < 900 else "Severe"
-        marker  = " ◀ EVENT" if h_event else ""
+        if h_event:
+            if h == pre_start:
+                marker = " ◀ PRE-GAME"
+            elif h >= event_hour + event_duration:
+                marker = " ◀ POST-GAME"
+            else:
+                marker = " ◀ GAME"
+        else:
+            marker = ""
         print(f"{h:02d}:00   {pred:>10.0f} {level:>12}{marker}")
         hourly_preds.append(pred)
     return hourly_preds
 
 def plot_future_day(date_str, has_event=0, max_attendance=0,
-                    total_attendance=0, event_hour=18, event_duration=4,
+                    total_attendance=0, event_hour=18, event_duration=3,
                     venue_type=-1, event_name="Event"):
     hours = list(range(24))
     predictions = []
+    pre_start = event_hour - 1
+    post_end  = event_hour + event_duration + 2
     for h in hours:
-        h_event = has_event if (has_event and event_hour <= h < event_hour + event_duration) else 0
+        h_event = has_event if (has_event and pre_start <= h < post_end) else 0
         vt      = venue_type if h_event else -1
         predictions.append(predict_hour(date_str, h, h_event, max_attendance, total_attendance, vt))
 
@@ -241,11 +264,13 @@ def plot_future_day(date_str, has_event=0, max_attendance=0,
     ax.plot(hours, predictions, color="#89b4fa", linewidth=2.5, marker="o", label="Predicted traffic")
 
     if has_event:
-        for h in range(event_hour, min(event_hour + event_duration, 24)):
+        for h in range(pre_start, min(post_end, 24)):
             ax.axvspan(h - 0.5, h + 0.5, alpha=0.2, color="#f9e2af")
-        ax.axvspan(0, 0, alpha=0.2, color="#f9e2af", label=f"Event: {event_name}")
+        ax.axvspan(0, 0, alpha=0.2, color="#f9e2af", label=f"Event window: {event_name}")
         ax.axvline(x=event_hour, color="#f38ba8", linewidth=2,
-                   linestyle="--", label=f"Event starts {event_hour:02d}:00")
+                   linestyle="--", label=f"Kickoff {event_hour:02d}:00")
+        ax.axvline(x=event_hour + event_duration, color="#a6e3a1", linewidth=2,
+                   linestyle="--", label=f"Final whistle {event_hour+event_duration:02d}:00")
 
     ax.set_ylim(0, max(predictions) * 1.2)
     ax.set_title(f"Predicted Hourly Traffic — {date_str}  |  Total: {total:.0f} vehicles  |  Congestion: {congestion}")
@@ -304,23 +329,14 @@ predict_with_auto_events("2026-06-01")   # no event
 print("\n=== 2027 PREDICTION (MANUAL with event) ===")
 predict_day_summary("2027-09-13", has_event=1, max_attendance=35000,
                      total_attendance=35000, event_hour=19,
-                     event_duration=4, venue_type=2)
+                     event_duration=3, venue_type=2)
 predict_day_hourly("2027-09-13",  has_event=1, max_attendance=35000,
                     total_attendance=35000, event_hour=19,
-                    event_duration=4, venue_type=2)
+                    event_duration=3, venue_type=2)
 plot_future_day("2027-09-13", has_event=1, max_attendance=35000,
-                total_attendance=35000, event_hour=19, event_duration=4,
+                total_attendance=35000, event_hour=19, event_duration=3,
                 venue_type=2, event_name="Major SCG Event")
 
 print("\n=== 2027 PREDICTION (MANUAL no event) ===")
 predict_day_summary("2027-09-13", has_event=0)
 predict_day_hourly("2027-09-13",  has_event=0)
-
-print('\n=== VENUE TYPE COMPARISON ===')
-print('Same event, Hordern (venue_type=0):')
-pred_hordern = predict_hour('2027-09-13', 19, has_event=1, max_attendance=35000, total_attendance=35000, venue_type=0)
-print(f'Predicted: {pred_hordern:.0f}')
-print('Same event, SCG (venue_type=2):')
-pred_scg = predict_hour('2027-09-13', 19, has_event=1, max_attendance=35000, total_attendance=35000, venue_type=2)
-print(f'Predicted: {pred_scg:.0f}')
-print(f'Difference: {pred_scg - pred_hordern:.0f} vehicles')
