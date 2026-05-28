@@ -186,18 +186,40 @@ def event_traffic_contribution(max_attendance, hour, event_hour, event_duration=
     if hour > 23:
         return 0
  
-    # Drive rate scales smoothly down as attendance grows —
+    # drive_rate scales smoothly down as attendance grows —
     # bigger crowds shift to PT due to parking scarcity.
     drive_rate = max(0.13, 0.40 - (max_attendance / 40000) * 0.27)
  
     # Venue-specific capture rate — what % of event traffic passes the sensor
-    # Calibrated against observed 2019 traffic spikes on event days
+    # For SCG/Allianz: capture rate scales with attendance based on road closure tipping point.
+    # Under 25,000 — Moore Park Rd stays open, most traffic bypasses ANZAC Parade (low capture)
+    # Over 30,000 — mandatory road closures force traffic onto ANZAC Parade (high capture)
+    # Small events still cause some increase, just not much.
     if venue_type == 0:
-        capture_rate = 0.63    # Hordern — calibrated from observed +1,318 spike
+        # Hordern — direct ANZAC Parade access but small venue
+        # Under 5,500 capacity so never triggers road closures alone
+        # Small consistent impact — calibrated from observed data
+        if max_attendance < 3000:
+            capture_rate = 0.20    # very small event, minimal impact
+        else:
+            capture_rate = 0.30    # full capacity, moderate impact
     elif venue_type == 1:
         capture_rate = 0.60    # Randwick — most traffic heads south on ANZAC Parade
     elif venue_type == 2:
-        capture_rate = 0.25    # SCG/Allianz — mostly Moore Park Rd, some via EQ parking
+        # SCG/Allianz: smooth ramp from 15% (small game) to 65% (sellout with road closures)
+        # Tipping point at 25,000-30,000 where road closures kick in
+        if max_attendance < 10000:
+            capture_rate = 0.10    # small game, Moore Park Rd open, minimal ANZAC impact
+        elif max_attendance < 25000:
+            # gradual increase — some traffic spills onto ANZAC Parade
+            capture_rate = 0.10 + (max_attendance - 10000) / 15000 * 0.20  # 10% → 30%
+        elif max_attendance < 30000:
+            # approaching tipping point — road management starting to redirect traffic
+            capture_rate = 0.30 + (max_attendance - 25000) / 5000 * 0.20   # 30% → 50%
+        else:
+            # 30,000+ — road closures force traffic onto ANZAC Parade
+            capture_rate = 0.50 + (max_attendance - 30000) / 10000 * 0.15  # 50% → 65% cap
+            capture_rate = min(capture_rate, 0.65)
     else:
         capture_rate = 0.50    # unknown venue — assume moderate capture
  
@@ -283,10 +305,24 @@ def predict_day_summary(date_str, has_event=0, max_attendance=0,
     print(f"Event day        : {'Yes' if has_event else 'No'}")
     if has_event:
         print(f"Attendance       : {max_attendance:,.0f}")
-        drive_rate   = max(0.13, 0.40 - (max_attendance / 40000) * 0.27)
-        capture_rate = 0.63 if venue_type == 0 else 0.60 if venue_type == 1 else 0.25 if venue_type == 2 else 0.50
-        venue_label  = "Hordern" if venue_type == 0 else "Randwick" if venue_type == 1 else "SCG/Allianz" if venue_type == 2 else "Unknown"
-        extra_cars   = max_attendance * drive_rate * capture_rate
+        drive_rate  = max(0.13, 0.40 - (max_attendance / 40000) * 0.27)
+        venue_label = "Hordern" if venue_type == 0 else "Randwick" if venue_type == 1 else "SCG/Allianz" if venue_type == 2 else "Unknown"
+        if venue_type == 0:
+            capture_rate = 0.20 if max_attendance < 3000 else 0.30
+        elif venue_type == 1:
+            capture_rate = 0.60
+        elif venue_type == 2:
+            if max_attendance < 10000:
+                capture_rate = 0.10
+            elif max_attendance < 25000:
+                capture_rate = 0.10 + (max_attendance - 10000) / 15000 * 0.20
+            elif max_attendance < 30000:
+                capture_rate = 0.30 + (max_attendance - 25000) / 5000 * 0.20
+            else:
+                capture_rate = min(0.50 + (max_attendance - 30000) / 10000 * 0.15, 0.65)
+        else:
+            capture_rate = 0.50
+        extra_cars = max_attendance * drive_rate * capture_rate
         print(f"Drive rate       : {drive_rate*100:.1f}% ({venue_label} capture: {capture_rate*100:.0f}%)")
         print(f"Extra vehicles   : ~{extra_cars:.0f} passing sensor")
         print(f"Event window     : {event_hour-2:02d}:00 → {min(event_hour+event_duration+3, 23):02d}:00")
