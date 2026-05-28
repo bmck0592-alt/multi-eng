@@ -300,6 +300,51 @@ def daily_congestion_level(total_vehicles):
         return "High"
     return "Severe"
 
+def shorten_event_name(name, max_len=34):
+    """
+    Shortens long event names so they fit inside the summary box and table.
+    """
+    name = str(name)
+
+    replacements = {
+        "Sydney Swans": "Swans",
+        "Richmond Tigers": "Richmond",
+        "Greater Western Sydney Giants": "GWS",
+        "Melbourne Victory": "Melb Victory",
+        "Football Club": "FC",
+        "Australian Football League": "AFL",
+        "National Rugby League": "NRL",
+    }
+
+    for old, new in replacements.items():
+        name = name.replace(old, new)
+
+    if len(name) > max_len:
+        return name[:max_len - 3] + "..."
+
+    return name
+
+
+def congestion_colour(level):
+    """
+    Returns background colour based on congestion level.
+    """
+    level = str(level).lower()
+
+    if level == "severe":
+        return "#ffcccc"   # light red
+    if level == "high":
+        return "#fff2cc"   # light yellow
+    if level == "moderate":
+        return "#ffd9b3"   # light orange
+    return "#d9ead3"       # light green
+
+
+def assistance_colour(assistance_needed):
+    """
+    Highlights assistance-needed cases.
+    """
+    return "#ff9999" if assistance_needed else "#d9ead3"
 
 def hourly_congestion_level(hourly_vehicles):
     if hourly_vehicles < 300:
@@ -504,7 +549,7 @@ def add_future_scenario(date_str, event_name="No event", has_event=0, max_attend
         event_duration=event_duration,
         venue_type=venue_type,
     )
-    result["event_name"] = event_name
+    result["event_name"] = shorten_event_name(event_name)
     result["has_event"] = has_event
     result["max_attendance"] = max_attendance
     result["event_hour"] = event_hour
@@ -606,7 +651,7 @@ print(
 # Matplotlib assistance display
 # ============================================================
 
-fig, ax = plt.subplots(figsize=(14, 8))
+fig, ax = plt.subplots(figsize=(16, 9))
 ax.axis("off")
 
 fig.suptitle(
@@ -640,6 +685,10 @@ summary_text = (
     f"Assistance Needed: {assistance_text}"
 )
 
+summary_face_colour = congestion_colour(latest["congestion"])
+summary_edge_colour = "#cc0000" if latest["assistance_needed"] else "black"
+summary_linewidth = 3 if latest["assistance_needed"] else 1.5
+
 ax.text(
     0.5,
     0.68,
@@ -647,7 +696,12 @@ ax.text(
     ha="center",
     va="center",
     fontsize=13,
-    bbox=dict(boxstyle="round,pad=0.8", edgecolor="black", facecolor="white"),
+    bbox=dict(
+        boxstyle="round,pad=0.8",
+        edgecolor=summary_edge_colour,
+        facecolor=summary_face_colour,
+        linewidth=summary_linewidth,
+    ),
 )
 
 table_data = []
@@ -656,7 +710,7 @@ for _, row in display_df.iterrows():
     table_data.append(
         [
             row["date_display"],
-            str(row["event_name"])[:30],
+            shorten_event_name(row["event_name"], max_len=28),
             f"{row['historic_average']:,.0f}",
             f"{row['predicted_traffic']:,.0f}",
             f"{row['difference']:+,.0f}",
@@ -685,12 +739,69 @@ table = ax.table(
     loc="lower center",
     cellLoc="center",
     colLoc="center",
-    bbox=[0.01, 0.05, 0.98, 0.36],
+    bbox=[0.03, 0.05, 0.94, 0.34],
 )
 
 table.auto_set_font_size(False)
-table.set_fontsize(8.5)
-table.scale(1, 1.5)
+table.set_fontsize(11)
+table.scale(1, 2.0)
+
+# Make important columns wider and less important columns narrower
+column_widths = {
+    0: 0.10,  # Date
+    1: 0.22,  # Event
+    2: 0.11,  # Historic Avg
+    3: 0.11,  # Predicted
+    4: 0.10,  # Difference
+    5: 0.09,  # % Change
+    6: 0.08,  # Peak
+    7: 0.10,  # Congestion
+    8: 0.09,  # Assist?
+}
+
+for (row, col), cell in table.get_celld().items():
+    if col in column_widths:
+        cell.set_width(column_widths[col])
+
+    # Bigger, bolder header
+    if row == 0:
+        cell.set_text_props(weight="bold", fontsize=11)
+    else:
+        cell.set_text_props(fontsize=10.5)
+
+# ------------------------------------------------------------
+# Colour table header
+# ------------------------------------------------------------
+
+for col_idx in range(len(column_labels)):
+    header_cell = table[(0, col_idx)]
+    header_cell.set_facecolor("#d9eaf7")
+    header_cell.set_text_props(weight="bold")
+
+
+# ------------------------------------------------------------
+# Colour rows based on congestion and assistance needed
+# ------------------------------------------------------------
+
+congestion_col = column_labels.index("Congestion")
+assist_col = column_labels.index("Assist?")
+
+for row_idx, (_, row) in enumerate(display_df.iterrows(), start=1):
+    congestion = row["congestion"]
+    assistance_needed = row["assistance_needed"]
+
+    # Lightly highlight whole row if assistance is needed
+    if assistance_needed:
+        for col_idx in range(len(column_labels)):
+            table[(row_idx, col_idx)].set_facecolor("#ffe6e6")
+
+    # Stronger colour for congestion cell
+    table[(row_idx, congestion_col)].set_facecolor(congestion_colour(congestion))
+    table[(row_idx, congestion_col)].set_text_props(weight="bold")
+
+    # Stronger colour for assistance cell
+    table[(row_idx, assist_col)].set_facecolor(assistance_colour(assistance_needed))
+    table[(row_idx, assist_col)].set_text_props(weight="bold")
 
 plt.tight_layout()
 
