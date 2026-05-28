@@ -13,143 +13,198 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-MULTI_ENG_DIR = BASE_DIR.parent
-BEN_DIR = MULTI_ENG_DIR / "ben"
+PROJECT_DIR = BASE_DIR.parent
+PROJECT_PARENT = PROJECT_DIR.parent
 
-TRAFFIC_FILE = BASE_DIR / "tfnsw_api" / "tfnsw_hourly_traffic.csv"
-
-
-def find_file(folder, pattern):
-    matches = list(folder.glob(pattern))
-
-    if len(matches) == 0:
-        raise FileNotFoundError(
-            f"No file found in {folder} matching pattern: {pattern}"
-        )
-
-    return matches[0]
+SEARCH_DIRS = [
+    BASE_DIR,
+    BASE_DIR / "tfnsw_api",
+    PROJECT_DIR,
+    PROJECT_DIR / "tfnsw_api",
+    PROJECT_DIR / "ben",
+    PROJECT_PARENT,
+    PROJECT_PARENT / "ben",
+]
 
 
-ALLIANZ_FILE = find_file(BEN_DIR, "*allianz*.csv")
-HORDERN_FILE = find_file(BEN_DIR, "*hordern*.csv")
-RANDWICK_FILE = find_file(BEN_DIR, "*randwick*.csv")
+def find_file(pattern, folders=SEARCH_DIRS):
+    """Find the first file matching a pattern in likely project folders."""
+    for folder in folders:
+        if folder.exists():
+            matches = sorted(folder.glob(pattern))
+            if matches:
+                return matches[0]
+
+    # Final fallback: recursive search from the project area.
+    for root in [BASE_DIR, PROJECT_DIR, PROJECT_PARENT]:
+        if root.exists():
+            matches = sorted(root.rglob(pattern))
+            if matches:
+                return matches[0]
+
+    raise FileNotFoundError(f"No file found matching pattern: {pattern}")
+
+
+TRAFFIC_FILE = find_file("tfnsw_hourly_traffic.csv")
+SCG_FILE = find_file("*scg*events*clean*.csv")
+HORDERN_FILE = find_file("*hordern*events*clean*.csv")
+RANDWICK_FILE = find_file("*randwick*events*clean*.csv")
+ALLIANZ_FILE = find_file("*allianz*sydney*football*stadium*events*clean*.csv")
 
 print("BASE_DIR:", BASE_DIR)
-print("BEN_DIR:", BEN_DIR)
 print("Traffic file:", TRAFFIC_FILE)
-print("Traffic exists:", TRAFFIC_FILE.exists())
-print("Allianz file:", ALLIANZ_FILE)
+print("SCG file:", SCG_FILE)
 print("Hordern file:", HORDERN_FILE)
 print("Randwick file:", RANDWICK_FILE)
+print("Allianz file:", ALLIANZ_FILE)
 
 
 # ============================================================
-# Load traffic data
+# Load traffic data and reshape to hourly
 # ============================================================
 
 traffic = pd.read_csv(TRAFFIC_FILE)
-
 traffic["date"] = pd.to_datetime(traffic["date"]).dt.tz_localize(None).dt.normalize()
 
+hour_cols = [f"hour_{str(i).zfill(2)}" for i in range(24)]
+missing_hour_cols = [col for col in hour_cols if col not in traffic.columns]
+if missing_hour_cols:
+    raise ValueError(f"Traffic file is missing hourly columns: {missing_hour_cols}")
+
+hourly = traffic.melt(
+    id_vars=["date", "year", "month", "day_of_week", "public_holiday", "school_holiday"],
+    value_vars=hour_cols,
+    var_name="hour_col",
+    value_name="vehicle_count",
+)
+
+hourly["hour"] = hourly["hour_col"].str.extract(r"(\d+)").astype(int)
+hourly = hourly.drop(columns="hour_col")
+hourly = hourly.dropna(subset=["vehicle_count"])
+hourly = hourly.sort_values(["date", "hour"]).reset_index(drop=True)
+
+
 # ============================================================
-# Load event data
+# Load and standardise event data
 # ============================================================
 
-allianz = pd.read_csv(ALLIANZ_FILE)
-hordern = pd.read_csv(HORDERN_FILE)
-randwick = pd.read_csv(RANDWICK_FILE)
-
-
-def standardise_event_file(event_df):
-    """
-    Makes event CSVs use the same column names.
-    Required final columns: date, estimated_attendance
-    """
-
-    event_df = event_df.copy()
+def load_event_file(path, default_attendance, venue_type, hour_column=None):
+    event_df = pd.read_csv(path).copy()
 
     if "attendance" in event_df.columns and "estimated_attendance" not in event_df.columns:
         event_df = event_df.rename(columns={"attendance": "estimated_attendance"})
 
-    if "Date" in event_df.columns and "date" not in event_df.columns:
-        event_df = event_df.rename(columns={"Date": "date"})
-
     if "Estimated Attendance" in event_df.columns and "estimated_attendance" not in event_df.columns:
         event_df = event_df.rename(columns={"Estimated Attendance": "estimated_attendance"})
 
+    if "Date" in event_df.columns and "date" not in event_df.columns:
+        event_df = event_df.rename(columns={"Date": "date"})
+
+    if "date" not in event_df.columns:
+        if "start" in event_df.columns:
+            event_df["date"] = pd.to_datetime(event_df["start"], errors="coerce").dt.normalize()
+        else:
+            raise ValueError(f"Could not find date/start column in {path}")
+    else:
+        event_df["date"] = pd.to_datetime(event_df["date"], errors="coerce").dt.normalize()
+
     if "estimated_attendance" not in event_df.columns:
-        event_df["estimated_attendance"] = 0
+        event_df["estimated_attendance"] = default_attendance
+    else:
+        event_df["estimated_attendance"] = pd.to_numeric(
+            event_df["estimated_attendance"],
+            errors="coerce",
+        ).fillna(default_attendance)
 
-    event_df["date"] = pd.to_datetime(event_df["date"], errors="coerce").dt.normalize()
-    event_df["estimated_attendance"] = pd.to_numeric(
-        event_df["estimated_attendance"],
-        errors="coerce"
-    ).fillna(0)
+    if hour_column and hour_column in event_df.columns:
+        event_df["event_hour"] = pd.to_numeric(event_df[hour_column], errors="coerce")
+    elif "start_hour" in event_df.columns:
+        event_df["event_hour"] = pd.to_numeric(event_df["start_hour"], errors="coerce")
+    elif "hour" in event_df.columns:
+        event_df["event_hour"] = pd.to_numeric(event_df["hour"], errors="coerce")
+    elif "start" in event_df.columns:
+        event_df["event_hour"] = pd.to_datetime(event_df["start"], errors="coerce").dt.hour
+    else:
+        event_df["event_hour"] = 18
 
+    event_df["event_hour"] = event_df["event_hour"].fillna(18).astype(int)
+    event_df["venue_type"] = venue_type
     event_df = event_df.dropna(subset=["date"])
 
-    return event_df[["date", "estimated_attendance"]]
+    return event_df[["date", "estimated_attendance", "event_hour", "venue_type"]]
 
 
-allianz = standardise_event_file(allianz)
-hordern = standardise_event_file(hordern)
-randwick = standardise_event_file(randwick)
+scg = load_event_file(SCG_FILE, default_attendance=35000, venue_type=2, hour_column="start_hour")
+hordern = load_event_file(HORDERN_FILE, default_attendance=5500, venue_type=0, hour_column="hour")
+randwick = load_event_file(RANDWICK_FILE, default_attendance=20000, venue_type=1, hour_column="hour")
+allianz = load_event_file(ALLIANZ_FILE, default_attendance=40000, venue_type=2, hour_column="start_hour")
 
-events = pd.concat(
-    [allianz, hordern, randwick],
-    ignore_index=True
-)
+events = pd.concat([scg, hordern, randwick, allianz], ignore_index=True)
 
-events_daily = events.groupby("date").agg(
-    event_flag=("date", "count"),
-    max_attendance=("estimated_attendance", "max"),
-    total_attendance=("estimated_attendance", "sum")
-).reset_index()
+print(f"\nTotal events across all venues: {len(events):,}")
+print(events.groupby(events["date"].dt.year)["estimated_attendance"].count().rename("event_count"))
 
-events_daily["max_attendance"] = events_daily["max_attendance"].fillna(0)
-events_daily["total_attendance"] = events_daily["total_attendance"].fillna(0)
+
+# ============================================================
+# Build event hours with pre/post event windows
+# ============================================================
+
+event_hours = []
+
+for _, row in events.iterrows():
+    start = int(row["event_hour"])
+    duration = 3
+    end = start + duration
+    pre_start = max(0, start - 2)      # 2 hours before event
+    post_end = min(24, end + 3)        # 3 hours after event
+
+    for h in range(pre_start, post_end):
+        event_hours.append(
+            {
+                "date": row["date"],
+                "hour": h,
+                "has_event": 1,
+                "max_attendance": row["estimated_attendance"],
+                "total_attendance": row["estimated_attendance"],
+                "venue_type": row["venue_type"],
+            }
+        )
+
+if event_hours:
+    event_hours_df = pd.DataFrame(event_hours).groupby(["date", "hour"]).agg(
+        has_event=("has_event", "max"),
+        max_attendance=("max_attendance", "max"),
+        total_attendance=("total_attendance", "sum"),
+        venue_type=("venue_type", "max"),
+    ).reset_index()
+else:
+    event_hours_df = pd.DataFrame(
+        columns=["date", "hour", "has_event", "max_attendance", "total_attendance", "venue_type"]
+    )
 
 
 # ============================================================
 # Merge traffic and event data
 # ============================================================
 
-df = traffic.merge(events_daily, on="date", how="left")
-
-df["event_flag"] = df["event_flag"].fillna(0)
-df["max_attendance"] = df["max_attendance"].fillna(0)
-df["total_attendance"] = df["total_attendance"].fillna(0)
+hourly = hourly.merge(event_hours_df, on=["date", "hour"], how="left")
+hourly["has_event"] = hourly["has_event"].fillna(0)
+hourly["max_attendance"] = hourly["max_attendance"].fillna(0)
+hourly["total_attendance"] = hourly["total_attendance"].fillna(0)
+hourly["venue_type"] = hourly["venue_type"].fillna(-1)
 
 
 # ============================================================
 # Feature engineering
 # ============================================================
 
-df["day_of_year"] = df["date"].dt.dayofyear
-
-# If day_of_week is not already in the traffic file, create it.
-# Monday = 1, Sunday = 7
-if "day_of_week" not in df.columns:
-    df["day_of_week"] = df["date"].dt.dayofweek + 1
-
-if "month" not in df.columns:
-    df["month"] = df["date"].dt.month
-
-if "year" not in df.columns:
-    df["year"] = df["date"].dt.year
-
-if "public_holiday" not in df.columns:
-    df["public_holiday"] = 0
-
-if "school_holiday" not in df.columns:
-    df["school_holiday"] = 0
-
-df["is_weekend"] = (df["day_of_week"] >= 6).astype(int)
-df["public_holiday"] = df["public_holiday"].astype(int)
-df["school_holiday"] = df["school_holiday"].astype(int)
-df["has_event"] = (df["event_flag"] > 0).astype(int)
+hourly["day_of_year"] = hourly["date"].dt.dayofyear
+hourly["is_weekend"] = (hourly["day_of_week"] >= 6).astype(int)
+hourly["public_holiday"] = hourly["public_holiday"].astype(int)
+hourly["school_holiday"] = hourly["school_holiday"].astype(int)
 
 FEATURES = [
+    "hour",
     "month",
     "day_of_week",
     "day_of_year",
@@ -159,34 +214,47 @@ FEATURES = [
     "has_event",
     "max_attendance",
     "total_attendance",
+    "venue_type",
 ]
+TARGET = "vehicle_count"
 
-TARGET = "daily_total"
-
-# Make sure model columns are numeric
 for col in FEATURES + [TARGET]:
-    df[col] = pd.to_numeric(df[col], errors="coerce")
+    hourly[col] = pd.to_numeric(hourly[col], errors="coerce")
 
-df = df.dropna(subset=FEATURES + [TARGET])
+hourly = hourly.dropna(subset=FEATURES + [TARGET])
 
 
 # ============================================================
-# Train/test split
+# Train/test split and balancing
 # ============================================================
 
-train = df[(df["year"] >= 2017) & (df["year"] <= 2018)].copy()
-test = df[df["year"] == 2019].copy()
+train = hourly[(hourly["year"] >= 2013) & (hourly["year"] <= 2018)].copy()
+test = hourly[hourly["year"] == 2019].copy()
 
 if len(train) == 0 or len(test) == 0:
-    raise ValueError(
-        "Train or test data is empty. Check that your traffic CSV contains 2017, 2018 and 2019 rows."
-    )
+    raise ValueError("Train or test data is empty. Check traffic years 2013-2019.")
 
-X_train = train[FEATURES]
-y_train = train[TARGET]
+event_train = train[train["has_event"] == 1]
+non_event_train = train[train["has_event"] == 0]
 
+if len(event_train) > 0:
+    sample_n = min(len(non_event_train), len(event_train) * 10)
+    non_event_sample = non_event_train.sample(n=sample_n, random_state=42)
+    train_balanced = pd.concat([event_train, non_event_sample]).sample(frac=1, random_state=42)
+else:
+    print("\nWarning: no event hours found in training data. Training on all rows.")
+    train_balanced = train.copy()
+
+X_train = train_balanced[FEATURES]
+y_train = train_balanced[TARGET]
 X_test = test[FEATURES]
 y_test = test[TARGET]
+
+print(f"\nEvent hours in training    : {len(event_train):,}")
+print(f"Non-event hours in training: {len(non_event_train):,}")
+print(f"Training rows used        : {len(X_train):,}")
+print(f"Test rows                 : {len(X_test):,}")
+print(f"Event hours in test       : {test['has_event'].sum():.0f}")
 
 
 # ============================================================
@@ -197,203 +265,318 @@ model = RandomForestRegressor(
     n_estimators=200,
     max_depth=10,
     min_samples_leaf=5,
-    random_state=42
+    random_state=42,
 )
-
 model.fit(X_train, y_train)
+y_pred = model.predict(X_test)
 
-test["predicted_traffic"] = model.predict(X_test)
+test = test.copy()
+test["predicted"] = y_pred
 
-
-# ============================================================
-# Create historic average for comparison
-# ============================================================
-
-historic_lookup = train.groupby(["month", "day_of_week"])[TARGET].mean().reset_index()
-historic_lookup = historic_lookup.rename(columns={TARGET: "historic_average"})
-
-test = test.merge(
-    historic_lookup,
-    on=["month", "day_of_week"],
-    how="left"
-)
-
-overall_average = train[TARGET].mean()
-test["historic_average"] = test["historic_average"].fillna(overall_average)
-
-
-# ============================================================
-# Metrics
-# ============================================================
-
-rmse = np.sqrt(mean_squared_error(y_test, test["predicted_traffic"]))
-mae = mean_absolute_error(y_test, test["predicted_traffic"])
-r2 = r2_score(y_test, test["predicted_traffic"])
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
 
 print("\nModel Performance")
-print(f"Training rows: {len(train):,}")
-print(f"Test rows    : {len(test):,}")
-print(f"RMSE: {rmse:.0f} vehicles/day")
-print(f"MAE : {mae:.0f} vehicles/day")
+print(f"RMSE: {rmse:.0f} vehicles/hour")
+print(f"MAE : {mae:.0f} vehicles/hour")
 print(f"R²  : {r2:.3f}")
 
+# Match main.py: subtract mean test-set bias from future predictions.
+bias_correction = (y_pred - y_test).mean()
+print(f"Bias correction: {bias_correction:.1f} vehicles/hour")
+
 
 # ============================================================
-# Future prediction + display logic
+# Prediction helpers copied/adapted from main.py
 # ============================================================
 
-def congestion_level(value):
-    if value < 10000:
+def daily_congestion_level(total_vehicles):
+    if total_vehicles < 10000:
         return "Low"
-    if value < 13000:
+    if total_vehicles < 13000:
         return "Moderate"
-    if value < 15000:
+    if total_vehicles < 15000:
         return "High"
     return "Severe"
 
 
-def make_prediction_row(date_str, event_name="No event", has_event=0,
-                        max_attendance=0, total_attendance=0,
-                        public_holiday=0, school_holiday=0):
-    date = pd.Timestamp(date_str).normalize()
+def hourly_congestion_level(hourly_vehicles):
+    if hourly_vehicles < 300:
+        return "Low"
+    if hourly_vehicles < 600:
+        return "Moderate"
+    if hourly_vehicles < 900:
+        return "High"
+    return "Severe"
+
+
+def event_traffic_contribution(max_attendance, hour, event_hour, event_duration=3, venue_type=-1):
+    """
+    Estimate extra vehicles passing Station 55432 due to an event.
+    Venue types:
+      0 = Hordern
+      1 = Randwick
+      2 = SCG/Allianz
+    """
+    if max_attendance <= 0 or hour > 23:
+        return 0
+
+    drive_rate = max(0.13, 0.40 - (max_attendance / 40000) * 0.27)
+
+    if venue_type == 0:
+        capture_rate = 0.20 if max_attendance < 3000 else 0.30
+    elif venue_type == 1:
+        capture_rate = 0.60
+    elif venue_type == 2:
+        if max_attendance < 10000:
+            capture_rate = 0.10
+        elif max_attendance < 25000:
+            capture_rate = 0.10 + (max_attendance - 10000) / 15000 * 0.20
+        elif max_attendance < 30000:
+            capture_rate = 0.30 + (max_attendance - 25000) / 5000 * 0.20
+        else:
+            capture_rate = min(0.50 + (max_attendance - 30000) / 10000 * 0.15, 0.65)
+    else:
+        capture_rate = 0.50
+
+    cars = max_attendance * drive_rate * capture_rate
+    post_start = event_hour + event_duration
+
+    if hour == event_hour - 2:
+        return cars * 0.15
+    if hour == event_hour - 1:
+        return cars * 0.35
+    if hour == event_hour:
+        return cars * 0.20
+    if event_hour < hour < post_start:
+        return cars * 0.06
+    if hour == post_start and post_start <= 23:
+        return cars * 0.15
+    if hour == post_start + 1 and post_start + 1 <= 23:
+        return cars * 0.10
+    if hour == post_start + 2 and post_start + 2 <= 23:
+        return cars * 0.05
+
+    return 0
+
+
+def predict_hour(date_str, hour, has_event=0, max_attendance=0, total_attendance=0,
+                 venue_type=-1, event_hour=18, event_duration=3):
+    date = pd.Timestamp(date_str)
+    input_data = pd.DataFrame([
+        {
+            "hour": hour,
+            "month": date.month,
+            "day_of_week": date.dayofweek + 1,
+            "day_of_year": date.dayofyear,
+            "is_weekend": 1 if date.dayofweek >= 5 else 0,
+            "public_holiday": 0,
+            "school_holiday": 0,
+            "has_event": has_event,
+            "max_attendance": max_attendance,
+            "total_attendance": total_attendance,
+            "venue_type": venue_type,
+        }
+    ])
+
+    base = max(0, model.predict(input_data)[0] - bias_correction)
+
+    if has_event:
+        extra = event_traffic_contribution(max_attendance, hour, event_hour, event_duration, venue_type)
+        return base + extra
+
+    return base
+
+
+def predict_day(date_str, has_event=0, max_attendance=0, total_attendance=0,
+                event_hour=18, event_duration=3, venue_type=-1):
+    pre_start = event_hour - 2
+    post_end = min(event_hour + event_duration + 3, 24)
+    hourly_predictions = []
+    base_predictions = []
+    event_extras = []
+
+    for h in range(24):
+        h_event = has_event if (has_event and pre_start <= h < post_end) else 0
+        vt = venue_type if h_event else -1
+
+        base = predict_hour(date_str, h, 0, 0, 0, -1, event_hour, event_duration)
+        total = predict_hour(
+            date_str,
+            h,
+            h_event,
+            max_attendance,
+            total_attendance,
+            vt,
+            event_hour,
+            event_duration,
+        )
+
+        base_predictions.append(base)
+        hourly_predictions.append(total)
+        event_extras.append(max(0, total - base))
+
+    total_daily = float(np.sum(hourly_predictions))
+    historic_average = get_historic_daily_average(date_str)
+    difference = total_daily - historic_average
+    percent_change = (difference / historic_average) * 100 if historic_average else 0
+    peak_hour = int(np.argmax(hourly_predictions))
+    peak_count = float(np.max(hourly_predictions))
 
     return {
-        "date": date,
-        "date_display": date.strftime("%Y-%m-%d"),
-        "event_name": event_name,
-
-        "month": date.month,
-        "day_of_week": date.dayofweek + 1,
-        "day_of_year": date.dayofyear,
-        "is_weekend": 1 if date.dayofweek >= 5 else 0,
-        "public_holiday": public_holiday,
-        "school_holiday": school_holiday,
-        "has_event": has_event,
-        "max_attendance": max_attendance,
-        "total_attendance": total_attendance,
+        "date": pd.Timestamp(date_str).normalize(),
+        "date_display": pd.Timestamp(date_str).strftime("%Y-%m-%d"),
+        "historic_average": historic_average,
+        "predicted_traffic": total_daily,
+        "difference": difference,
+        "percent_change": percent_change,
+        "peak_hour": peak_hour,
+        "peak_count": peak_count,
+        "congestion": daily_congestion_level(total_daily),
+        "hourly_predictions": hourly_predictions,
+        "base_predictions": base_predictions,
+        "event_extras": event_extras,
     }
 
 
-# ============================================================
-# Load Ben's future event file
-# ============================================================
+# Historic daily average from training data, comparable to predicted daily totals.
+train_daily = train.groupby("date").agg(
+    total_vehicles=(TARGET, "sum"),
+    month=("month", "first"),
+    day_of_week=("day_of_week", "first"),
+).reset_index()
 
-FUTURE_EVENTS_FILE = BEN_DIR / "events_cleaned.csv"
+daily_historic_lookup = train_daily.groupby(["month", "day_of_week"])["total_vehicles"].mean().reset_index()
+daily_historic_lookup = daily_historic_lookup.rename(columns={"total_vehicles": "historic_average"})
+overall_daily_average = train_daily["total_vehicles"].mean()
+ASSISTANCE_THRESHOLD = train_daily["total_vehicles"].quantile(0.80)
 
-future_rows = []
+print(f"\nAssistance threshold: {ASSISTANCE_THRESHOLD:,.0f} vehicles/day")
 
-if FUTURE_EVENTS_FILE.exists():
-    future_events = pd.read_csv(FUTURE_EVENTS_FILE)
 
-    future_events["date"] = (
-        pd.to_datetime(future_events["start"], errors="coerce")
-        .dt.tz_localize(None)
-        .dt.normalize()
-    )
-
-    # Choose the future dates you want to display
-    dates_to_predict = [
-        "2026-05-22",
-        "2026-05-23",
-        "2026-06-02",
-        "2027-10-13",
-        "2027-09-14",
+def get_historic_daily_average(date_str):
+    date = pd.Timestamp(date_str)
+    match = daily_historic_lookup[
+        (daily_historic_lookup["month"] == date.month)
+        & (daily_historic_lookup["day_of_week"] == date.dayofweek + 1)
     ]
+
+    if len(match) == 0:
+        return float(overall_daily_average)
+
+    return float(match["historic_average"].iloc[0])
+
+
+def infer_venue_type(venue_text):
+    venue_text = str(venue_text).lower()
+    if "scg" in venue_text or "allianz" in venue_text or "football stadium" in venue_text:
+        return 2
+    if "randwick" in venue_text:
+        return 1
+    if "hordern" in venue_text:
+        return 0
+    return 0
+
+
+# ============================================================
+# Load future event data and build display rows
+# ============================================================
+
+future_events_file = None
+for pattern in ["events_cleaned_AEDT.csv", "events_cleaned.csv"]:
+    try:
+        future_events_file = find_file(pattern)
+        break
+    except FileNotFoundError:
+        pass
+
+future_scenarios = []
+
+def add_future_scenario(date_str, event_name="No event", has_event=0, max_attendance=0,
+                        event_hour=18, event_duration=3, venue_type=-1):
+    result = predict_day(
+        date_str,
+        has_event=has_event,
+        max_attendance=max_attendance,
+        total_attendance=max_attendance,
+        event_hour=event_hour,
+        event_duration=event_duration,
+        venue_type=venue_type,
+    )
+    result["event_name"] = event_name
+    result["has_event"] = has_event
+    result["max_attendance"] = max_attendance
+    result["event_hour"] = event_hour
+    result["event_duration"] = event_duration
+    result["venue_type"] = venue_type
+    result["assistance_needed"] = result["predicted_traffic"] > ASSISTANCE_THRESHOLD
+    result["vehicles_above_threshold"] = result["predicted_traffic"] - ASSISTANCE_THRESHOLD
+    future_scenarios.append(result)
+
+
+if future_events_file is not None:
+    print("Future events file:", future_events_file)
+    future_events = pd.read_csv(future_events_file)
+    future_events["date"] = pd.to_datetime(future_events["start"], errors="coerce").dt.normalize()
+    future_events["event_hour"] = pd.to_datetime(future_events["start"], errors="coerce").dt.hour
+
+    # Same headline dates used by main.py, with one manual comparison day.
+    dates_to_predict = ["2026-05-30", "2026-06-01", "2027-09-13"]
 
     for date_str in dates_to_predict:
         date = pd.Timestamp(date_str).normalize()
         events_that_day = future_events[future_events["date"] == date]
 
         if len(events_that_day) > 0:
-            has_event = 1
+            first_event = events_that_day.iloc[0]
+            event_name = str(first_event.get("summary", "Event"))
+            event_hour = int(first_event.get("event_hour", 18)) if pd.notna(first_event.get("event_hour", 18)) else 18
+            venue = first_event.get("venue", "")
+            venue_type = infer_venue_type(venue)
 
-            # Your main.py uses intensity * 50000
-            max_attendance = events_that_day["intensity"].max() * 50000
-            total_attendance = max_attendance * len(events_that_day)
+            if "intensity" in events_that_day.columns:
+                max_attendance = float(events_that_day["intensity"].max()) * 35000
+            elif "estimated_attendance" in events_that_day.columns:
+                max_attendance = float(pd.to_numeric(events_that_day["estimated_attendance"], errors="coerce").max())
+            else:
+                max_attendance = 35000
 
-            event_name = "; ".join(events_that_day["summary"].astype(str).tolist())
-        else:
-            has_event = 0
-            max_attendance = 0
-            total_attendance = 0
-            event_name = "No event"
-
-        future_rows.append(
-            make_prediction_row(
-                date_str=date_str,
+            add_future_scenario(
+                date_str,
                 event_name=event_name,
-                has_event=has_event,
+                has_event=1,
                 max_attendance=max_attendance,
-                total_attendance=total_attendance,
-                public_holiday=0,
-                school_holiday=0,
+                event_hour=event_hour,
+                event_duration=3,
+                venue_type=venue_type,
             )
-        )
-
+        else:
+            add_future_scenario(date_str, event_name="No event", has_event=0)
 else:
-    print(f"\nWarning: could not find {FUTURE_EVENTS_FILE}")
-    print("Using manual future scenarios instead.")
-
-    future_rows = [
-        make_prediction_row(
-            "2027-09-13",
-            event_name="Manual event scenario",
-            has_event=1,
-            max_attendance=45000,
-            total_attendance=45000,
-        ),
-        make_prediction_row(
-            "2027-09-14",
-            event_name="No event",
-            has_event=0,
-            max_attendance=0,
-            total_attendance=0,
-        ),
-    ]
-
-
-future_df = pd.DataFrame(future_rows)
-
-# Predict future traffic using the trained Random Forest
-future_df["predicted_traffic"] = model.predict(future_df[FEATURES])
+    print("\nWarning: could not find a future events file. Using manual scenarios instead.")
+    add_future_scenario(
+        "2026-05-30",
+        event_name="Manual SCG/Allianz event",
+        has_event=1,
+        max_attendance=35000,
+        event_hour=19,
+        event_duration=3,
+        venue_type=2,
+    )
+    add_future_scenario("2026-06-01", event_name="No event", has_event=0)
+    add_future_scenario(
+        "2027-09-13",
+        event_name="Manual SCG/Allianz event",
+        has_event=1,
+        max_attendance=35000,
+        event_hour=19,
+        event_duration=3,
+        venue_type=2,
+    )
 
 
-# ============================================================
-# Historic average comparison
-# ============================================================
-
-historic_lookup = train.groupby(["month", "day_of_week"])[TARGET].mean().reset_index()
-historic_lookup = historic_lookup.rename(columns={TARGET: "historic_average"})
-
-future_df = future_df.merge(
-    historic_lookup,
-    on=["month", "day_of_week"],
-    how="left"
-)
-
-overall_average = train[TARGET].mean()
-future_df["historic_average"] = future_df["historic_average"].fillna(overall_average)
-
-
-# ============================================================
-# Assistance calculations
-# ============================================================
-
-# Data-driven threshold:
-# 80th percentile = traffic level higher than 80% of historical training days
-ASSISTANCE_THRESHOLD = train[TARGET].quantile(0.80)
-
-print(f"\nAssistance threshold: {ASSISTANCE_THRESHOLD:,.0f} vehicles/day")
-
-future_df["difference"] = future_df["predicted_traffic"] - future_df["historic_average"]
-future_df["percent_change"] = (future_df["difference"] / future_df["historic_average"]) * 100
-
-future_df["vehicles_above_threshold"] = future_df["predicted_traffic"] - ASSISTANCE_THRESHOLD
-future_df["assistance_needed"] = future_df["predicted_traffic"] > ASSISTANCE_THRESHOLD
-
-future_df["congestion"] = future_df["predicted_traffic"].apply(congestion_level)
-
-display_df = future_df.copy()
+display_df = pd.DataFrame(future_scenarios)
 
 
 # ============================================================
@@ -410,6 +593,8 @@ print(
             "predicted_traffic",
             "difference",
             "percent_change",
+            "peak_hour",
+            "peak_count",
             "congestion",
             "assistance_needed",
         ]
@@ -418,71 +603,69 @@ print(
 
 
 # ============================================================
-# Matplotlib number-style display
+# Matplotlib assistance display
 # ============================================================
 
-fig, ax = plt.subplots(figsize=(13, 7))
+fig, ax = plt.subplots(figsize=(14, 8))
 ax.axis("off")
 
 fig.suptitle(
     "Future Traffic Forecast Assistance Display",
     fontsize=18,
-    fontweight="bold"
+    fontweight="bold",
 )
 
 station_text = "Station 55432 — Cleveland Street, West of Anzac Parade"
+ax.text(0.5, 0.94, station_text, ha="center", va="center", fontsize=12)
 
-ax.text(
-    0.5,
-    0.93,
-    station_text,
-    ha="center",
-    va="center",
-    fontsize=12
-)
-
-# Main card uses the first future prediction
 latest = display_df.iloc[0]
 assistance_text = "YES" if latest["assistance_needed"] else "NO"
+event_time_text = "No event"
+if latest["has_event"]:
+    event_time_text = (
+        f"Event window: {int(latest['event_hour']) - 2:02d}:00 → "
+        f"{min(int(latest['event_hour']) + int(latest['event_duration']) + 3, 23):02d}:00"
+    )
 
 summary_text = (
     f"Selected Date: {latest['date_display']}\n"
-    f"Scenario: {latest['event_name']}\n\n"
+    f"Scenario: {latest['event_name']}\n"
+    f"{event_time_text}\n\n"
     f"Historic Average: {latest['historic_average']:,.0f} vehicles/day\n"
     f"Predicted Traffic: {latest['predicted_traffic']:,.0f} vehicles/day\n"
     f"Difference: {latest['difference']:+,.0f} vehicles/day\n"
     f"Change: {latest['percent_change']:+.1f}%\n"
+    f"Peak Hour: {int(latest['peak_hour']):02d}:00 ({latest['peak_count']:,.0f} vehicles/hour)\n"
     f"Congestion Level: {latest['congestion']}\n"
     f"Assistance Needed: {assistance_text}"
 )
 
 ax.text(
     0.5,
-    0.66,
+    0.68,
     summary_text,
     ha="center",
     va="center",
-    fontsize=14,
-    bbox=dict(
-        boxstyle="round,pad=0.8",
-        edgecolor="black",
-        facecolor="white"
-    )
+    fontsize=13,
+    bbox=dict(boxstyle="round,pad=0.8", edgecolor="black", facecolor="white"),
 )
 
 table_data = []
 
 for _, row in display_df.iterrows():
-    table_data.append([
-        row["date_display"],
-        str(row["event_name"])[:28],
-        f"{row['historic_average']:,.0f}",
-        f"{row['predicted_traffic']:,.0f}",
-        f"{row['difference']:+,.0f}",
-        f"{row['percent_change']:+.1f}%",
-        row["congestion"],
-        "YES" if row["assistance_needed"] else "NO",
-    ])
+    table_data.append(
+        [
+            row["date_display"],
+            str(row["event_name"])[:30],
+            f"{row['historic_average']:,.0f}",
+            f"{row['predicted_traffic']:,.0f}",
+            f"{row['difference']:+,.0f}",
+            f"{row['percent_change']:+.1f}%",
+            f"{int(row['peak_hour']):02d}:00",
+            row["congestion"],
+            "YES" if row["assistance_needed"] else "NO",
+        ]
+    )
 
 column_labels = [
     "Date",
@@ -491,8 +674,9 @@ column_labels = [
     "Predicted",
     "Difference",
     "% Change",
+    "Peak",
     "Congestion",
-    "Assist?"
+    "Assist?",
 ]
 
 table = ax.table(
@@ -501,7 +685,7 @@ table = ax.table(
     loc="lower center",
     cellLoc="center",
     colLoc="center",
-    bbox=[0.01, 0.04, 0.98, 0.36]
+    bbox=[0.01, 0.05, 0.98, 0.36],
 )
 
 table.auto_set_font_size(False)
@@ -512,7 +696,6 @@ plt.tight_layout()
 
 output_file = BASE_DIR / "future_traffic_forecast_display.png"
 plt.savefig(output_file, dpi=300)
-
 print(f"\nSaved display to: {output_file}")
 
 plt.show()
