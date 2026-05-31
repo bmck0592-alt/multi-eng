@@ -567,7 +567,7 @@ if future_events_file is not None:
     future_events["event_hour"] = pd.to_datetime(future_events["start"], errors="coerce").dt.hour
 
     # Same headline dates used by main.py, with one manual comparison day.
-    dates_to_predict = ["2026-05-30", "2026-06-01", "2027-09-13"]
+    dates_to_predict = ["2026-05-30", "2026-06-01", "2028-09-13"]
 
     for date_str in dates_to_predict:
         date = pd.Timestamp(date_str).normalize()
